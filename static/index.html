@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>門市報表製作</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div class="eyebrow">STORE REPORT GENERATOR</div>
+      <h1>門市報表製作</h1>
+    </header>
+
+    <section class="card" id="configCard">
+      <h2>設定</h2>
+      <div class="form-row">
+        <label for="shopId">門市</label>
+        <select id="shopId"></select>
+      </div>
+      <div class="form-row">
+        <label for="weekEnd">週結束日期（週六）</label>
+        <input type="date" id="weekEnd">
+      </div>
+      <p class="hint" id="weekRangeHint"></p>
+      <div class="actions">
+        <button class="primary-btn" id="generateBtn" type="button">產生報表</button>
+      </div>
+    </section>
+
+    <section class="card" id="progressCard" hidden>
+      <h2>產生進度</h2>
+      <div class="progress-bar-wrap">
+        <div class="progress-bar" id="progressBar" style="width:0%"></div>
+      </div>
+      <p class="progress-label" id="progressLabel">準備中…</p>
+      <div class="log-box" id="logBox"></div>
+    </section>
+
+    <section class="card" id="downloadCard" hidden>
+      <h2>下載</h2>
+      <p id="downloadInfo"></p>
+      <button class="primary-btn" id="downloadBtn" type="button">下載 Excel</button>
+      <button class="ghost-btn" id="resetBtn" type="button">重新產生</button>
+    </section>
+
+    <section class="card" id="errorCard" hidden>
+      <h2>發生錯誤</h2>
+      <p id="errorMsg" class="error-msg"></p>
+      <button class="ghost-btn" id="retryBtn" type="button">重試</button>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
