@@ -30,10 +30,9 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = ROOT / "static"
-PROJECT_ROOT = ROOT.parent
-TEMPLATE_PATH = PROJECT_ROOT / "週報模板.xlsx"
-DATA_DIR = PROJECT_ROOT / "銷售資料"
-ENGINE_PATH = PROJECT_ROOT / "fill_weekly_excel.py"
+TEMPLATE_PATH = ROOT / "週報模板.xlsx"
+DATA_DIR = ROOT / "銷售資料"
+ENGINE_PATH = ROOT / "fill_weekly_excel.py"
 SACARE_PATH = DATA_DIR / "SAcare對應價目表.xlsx"
 
 JAVA = "/Library/Java/JavaVirtualMachines/jdk1.8.0_251.jdk/Contents/Home/jre/bin/java"
