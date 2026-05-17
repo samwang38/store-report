@@ -936,12 +936,12 @@ def fill_sheet78(ws7, ws8, df_cur, sacare_prices, dates: dict):
         ap_rate     = safe_rate(airpods_acpp + airpods_sa, airpods)
 
         vals = [
-            cpu or None, mac_acpp or None, mac_sa or None, mac_rate or None,
-            ipad or None, ipad_acpp or None, ipad_sa or None, ipad_rate or None,
-            iphone or None, iphone_acpp or None, iphone_sa or None, iphone_rate or None,
-            ios_rate or None,
-            watch or None, watch_acpp or None, watch_sa or None, watch_rate or None,
-            airpods or None, airpods_acpp or None, airpods_sa or None, ap_rate or None,
+            cpu or None, mac_acpp or None, mac_sa or None, mac_rate,
+            ipad or None, ipad_acpp or None, ipad_sa or None, ipad_rate,
+            iphone or None, iphone_acpp or None, iphone_sa or None, iphone_rate,
+            ios_rate,
+            watch or None, watch_acpp or None, watch_sa or None, watch_rate,
+            airpods or None, airpods_acpp or None, airpods_sa or None, ap_rate,
         ]
         for col_offset, v in enumerate(vals):
             ws.cell(row=row, column=col_offset + 2).value = v
