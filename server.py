@@ -63,6 +63,8 @@ REPORT_SHEETS = [
     "7.個人週主機",
     "8.個人月主機",
     "9.個人月3PP",
+    "10.月報YOY",
+    "11.3PP YOY",
 ]
 
 TRANS_TYPE_MAP = {
@@ -562,6 +564,10 @@ def build_report_workbook(payload, log=lambda m: None):
     engine.fill_sheet2(wb["2.門市週報 "], df_cur, df_prev, sacare_prices, dates)
     engine.fill_sheet3(wb["3.3PP配件比較"], df_cur, df_prev, sacare_prices, dates)
     engine.fill_sheet45(wb["4.3PP 銷售排名"], wb["5.VAP銷售排名"], df_cur, sacare_prices, dates)
+
+    log("填入 10-11 年對年報表…")
+    engine.fill_sheet10(wb["10.月報YOY"], df_cur, df_prev, sacare_prices, dates)
+    engine.fill_sheet11(wb["11.3PP YOY"], df_cur, df_prev, sacare_prices, dates)
 
     log("填入個人 6-9 報表…")
     fill_employee_report_sheets(wb, df_cur, sacare_prices, dates)
