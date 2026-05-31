@@ -1003,6 +1003,136 @@ def fill_sheet9(ws, df_cur, sacare_prices, dates: dict):
         total = sum(ws.cell(row=r, column=col).value or 0 for r in emp_rows_9)
         ws.cell(row=total_row, column=col).value = total or None
 
+# ─── Sheet 10/11 共用：YOY 累積截止日（以本週末日為準）────────────────────────
+def _yoy_period_ends(dates: dict) -> 'tuple[date, date]':
+    """回傳 (今年截止日, 去年截止日)。
+    今年 = 本週末日；去年 = 去年同月同日（2/29 等不存在時取當月最後一天）。"""
+    wk_end = dates['wk_end']
+    prev_year = wk_end.year - 1
+    last = monthrange(prev_year, wk_end.month)[1]
+    prv_e = date(prev_year, wk_end.month, min(wk_end.day, last))
+    return wk_end, prv_e
+
+
+# ─── Sheet 10: 月報YOY（年對年累積比較）────────────────────────────────────────
+def fill_sheet10(ws, df_cur, df_prev, sacare_prices, dates: dict):
+    print('  Sheet 10: 月報YOY', flush=True)
+    # 累積區間：今年 1/1～本週末、去年 1/1～去年同日（以週末日為準，不受跨月影響）
+    cur_e, prv_e = _yoy_period_ends(dates)
+    cur = calc_metrics(period(df_cur,  dates['ytd_cur_start'], cur_e), sacare_prices)
+    prv = calc_metrics(period(df_prev, dates['ytd_prv_start'], prv_e), sacare_prices)
+
+    # row -> (key, type)；type: m=金額/台數, p=比率(num,den), s=特例
+    rows = {
+        2:  ('total_rev', 'm'),                      # 總營業額
+        3:  ('total_rev', 'm'),                      # 零售營業額（= 總，無專案）
+        # row 4 專案營業額 → 留空（0）
+        5:  ('rev_3001', 'm'),                        # Apple 主機營業額
+        6:  ('rev_3002', 'm'),                        # Apple 配件營業額
+        7:  ('rev_3003', 'm'),                        # 3PP配件營業額
+        8:  (('rev_3003', 'total_rev'), 'p'),         # 3PP搭售率
+        9:  ('sa_rev', 'm'),                          # SA Care 營業額
+        10: (('sa_rev', 'total_rev'), 'p'),           # SA Care 搭售率
+        11: ('total_gross', 'm'),                     # 總毛利額
+        12: ('apl_gross', 'm'),                        # Apple 毛利額
+        13: ('tpp_gross', 'm'),                        # 3PP 毛利額
+        14: ('sa_gross', 'm'),                         # SA Care 毛利額
+        15: ('cpu_ex_mini', 's'),                      # CPU 台數（不含Mac mini）= 總 − mini
+        16: ('cpu_mini', 'm'),                         # Mac mini 台數
+        17: ('cpu_total', 'm'),                        # CPU 總台數
+        18: ('acpp_mac', 'm'),                         # ACPP-MAC 套數
+        19: (('acpp_mac', 'cpu_total'), 'p'),          # ACPP-MAC 搭售率
+        20: ('sa_cpu', 'm'),                           # SA Care for CPU 套數
+        21: (('sa_cpu', 'cpu_total'), 'p'),            # SA Care for CPU 搭售率
+        22: ('ipad', 'm'),                             # iPad 台數
+        23: ('sa_ipad', 'm'),                          # SA Care for iPad 套數
+        24: (('sa_ipad', 'ipad'), 'p'),                # SA Care for iPad 搭售率
+        25: ('iphone', 'm'),                           # iPhone 台數
+        26: ('sa_iphone', 'm'),                        # SA Care for iPhone 套數
+        27: (('sa_iphone', 'iphone'), 'p'),            # SA Care for iPhone 搭售率
+        28: ('watch', 'm'),                            # Watch 台數
+        29: ('sa_watch', 'm'),                         # SA Care for Watch 套數
+        30: (('sa_watch', 'watch'), 'p'),              # SA Care for Watch 搭售率
+        # row 31 人均產值、32 來客數 → 來自 POS，非 800AB，留空
+        33: ('txn_count', 'm'),                        # 成交筆數
+    }
+
+    def value(m, key, typ):
+        if typ == 'p':
+            n, d = key
+            return safe_rate(m.get(n, 0), m.get(d, 0)) or 0
+        if typ == 's' and key == 'cpu_ex_mini':
+            return m['cpu_total'] - m['cpu_mini']   # MacBook + iMac
+        return m.get(key, 0)
+
+    for r, (key, typ) in rows.items():
+        b = value(prv, key, typ)
+        c = value(cur, key, typ)
+        is_pct = (typ == 'p')
+        ws.cell(row=r, column=2).value = (round(b, 4) if is_pct else int(b)) if (is_pct or b) else None  # B 去年同期累積
+        ws.cell(row=r, column=3).value = (round(c, 4) if is_pct else int(c)) if (is_pct or c) else None  # C 今年累積
+        # D 年差異 = 今年 − 去年
+        diff = c - b
+        ws.cell(row=r, column=4).value = round(diff, 6) if is_pct else (int(diff) if diff else None)
+        # E 差異比例 = 年差異 / 去年
+        ws.cell(row=r, column=5).value = safe_rate(diff, b)
+
+
+# ─── Sheet 11: 3PP YOY（各 3PP 類別年對年累積比較）─────────────────────────────
+def fill_sheet11(ws, df_cur, df_prev, sacare_prices, dates: dict):
+    print('  Sheet 11: 3PP YOY', flush=True)
+    sa_codes = set(sacare_prices.keys())
+
+    def c4_rev(df, start, end, c4_code):
+        d = period(df, start, end)
+        d = d[~d['存貨代碼'].astype(str).str.strip().isin(sa_codes)]
+        d = d[(d['類別3代碼'] == 3003.0) & (d['類別4代碼'] == c4_code)]
+        return int(d['NET'].sum())
+
+    def sa_rev_total(df, start, end):
+        d = period(df, start, end)
+        sa = d[d['存貨代碼'].astype(str).str.strip().isin(sa_codes)].copy()
+        sa['SA_NET'] = sa['存貨代碼'].astype(str).str.strip().map(sacare_prices) * sa['數量'].fillna(0)
+        return int(sa['SA_NET'].sum())
+
+    cur_e, prv_e = _yoy_period_ends(dates)
+    cur_s, prv_s = dates['ytd_cur_start'], dates['ytd_prv_start']
+
+    def write_row(row, b, c):
+        # C 去年度累積、D 今年度累積、E 差異金額、F 差異比例
+        ws.cell(row=row, column=3).value = b or None
+        ws.cell(row=row, column=4).value = c or None
+        ws.cell(row=row, column=5).value = (c - b) or None
+        ws.cell(row=row, column=6).value = safe_rate(c - b, b)
+
+    # 依模板既有的「類別4代碼」(A 欄) 逐列對應，動態讀取避免硬編列號
+    sa_row = None
+    pure_b = pure_c = 0
+    for r in range(2, ws.max_row + 1):
+        code = ws.cell(row=r, column=1).value
+        if code is None:
+            continue
+        code_f = float(code)
+        if code_f == 4040.0:        # SA CARE
+            b, c = sa_rev_total(df_prev, prv_s, prv_e), sa_rev_total(df_cur, cur_s, cur_e)
+            sa_row = r
+        else:                        # 一般 3PP 類別
+            b, c = c4_rev(df_prev, prv_s, prv_e, code_f), c4_rev(df_cur, cur_s, cur_e, code_f)
+            pure_b += b
+            pure_c += c
+        write_row(r, b, c)
+
+    sa_b = sa_rev_total(df_prev, prv_s, prv_e)
+    sa_c = sa_rev_total(df_cur, cur_s, cur_e)
+    # 加總（純配件 + SA CARE）與 純配件：依 B 欄文字找列
+    for r in range(2, ws.max_row + 1):
+        label = ws.cell(row=r, column=2).value
+        if label == '加總':
+            write_row(r, pure_b + sa_b, pure_c + sa_c)
+        elif label == '純配件':
+            write_row(r, pure_b, pure_c)
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
     args = parse_args()
@@ -1135,6 +1265,8 @@ def main():
     fill_sheet6(wb['6.個人新制獎金'], df_cur, sacare_prices, dates)
     fill_sheet78(wb['7.個人週主機'], wb['8.個人月主機'], df_cur, sacare_prices, dates)
     fill_sheet9(wb['9.個人月3PP'], df_cur, sacare_prices, dates)
+    fill_sheet10(wb['10.月報YOY'], df_cur, df_prev, sacare_prices, dates)
+    fill_sheet11(wb['11.3PP YOY'], df_cur, df_prev, sacare_prices, dates)
 
     wb.save(output)
     print(f'\n✓ 完成: {output}')
