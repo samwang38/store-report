@@ -346,10 +346,12 @@ order by l.doc_date, l.doc_id, l.line_no
 
 def load_epb_data(shop_id, dates, quarter_start):
     sacare_prices = engine.load_sacare(SACARE_PATH)
-    cur_start = min(dates["ytd_cur_start"], dates["prev_wk_start"], dates["lm_start"], quarter_start)
-    cur_end = max(dates["mo_end"], dates["wk_end"])
-    prv_start = dates["ytd_prv_start"]
-    prv_end = dates["ly_end"]
+    # 納入 Sheet 10/11 年對年區間（截止日可由前端自訂，可能晚於週結束日）
+    yoy_cur_s, yoy_cur_e, yoy_prv_s, yoy_prv_e = engine._yoy_periods(dates)
+    cur_start = min(dates["ytd_cur_start"], dates["prev_wk_start"], dates["lm_start"], quarter_start, yoy_cur_s)
+    cur_end = max(dates["mo_end"], dates["wk_end"], yoy_cur_e)
+    prv_start = min(dates["ytd_prv_start"], yoy_prv_s)
+    prv_end = max(dates["ly_end"], yoy_prv_e)
     df_cur = remote_sales_df(shop_id, cur_start, cur_end)
     df_prev = remote_sales_df(shop_id, prv_start, prv_end)
     return df_cur, df_prev, sacare_prices, {
@@ -542,6 +544,11 @@ def build_report_workbook(payload, log=lambda m: None):
         raise ValueError("本週結束日不可早於起始日")
     log(f"門市 {shop_id}　本週 {wk_start} ~ {wk_end}")
     dates = compute_periods(wk_start, wk_end)
+    # 年對年截止日（Sheet 10/11）：前端可自訂，留空則沿用本週結束日
+    yoy_end = parse_date(payload.get("yoyEnd"), wk_end)
+    dates["yoy_end"] = yoy_end
+    if yoy_end != wk_end:
+        log(f"年對年截止日（自訂）：{yoy_end}（對比 {yoy_end.year-1} 年同期）")
     wb = openpyxl.load_workbook(TEMPLATE_PATH)
     template_employees = engine.load_employees(wb) or engine.EMPLOYEES
     template_employee_count = len(template_employees)

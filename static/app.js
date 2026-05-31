@@ -9,6 +9,8 @@
   const shopSelect    = $('shopId');
   const weekEndInput  = $('weekEnd');
   const weekRangeHint = $('weekRangeHint');
+  const yoyEndInput   = $('yoyEnd');
+  const yoyRangeHint  = $('yoyRangeHint');
   const generateBtn   = $('generateBtn');
   const progressBar   = $('progressBar');
   const progressLabel = $('progressLabel');
@@ -34,7 +36,19 @@
     weekRangeHint.textContent = `本週範圍：${fmtDate(start)} ～ ${fmtDate(end)}`;
   }
 
-  weekEndInput.addEventListener('change', () => updateHint(weekEndInput.value));
+  function updateYoyHint() {
+    // 年對年截止日留空時，視同採用週結束日
+    const val = yoyEndInput.value || weekEndInput.value;
+    if (!val) { yoyRangeHint.textContent = '留空則沿用週結束日'; return; }
+    const end = new Date(val + 'T00:00:00');
+    const y = end.getFullYear();
+    const md = `${String(end.getMonth()+1).padStart(2,'0')}/${String(end.getDate()).padStart(2,'0')}`;
+    const note = yoyEndInput.value ? '' : '（沿用週結束日）';
+    yoyRangeHint.textContent = `年對年比較：${y-1}/01/01～${y-1}/${md} vs ${y}/01/01～${y}/${md}${note}`;
+  }
+
+  weekEndInput.addEventListener('change', () => { updateHint(weekEndInput.value); updateYoyHint(); });
+  yoyEndInput.addEventListener('change', updateYoyHint);
 
   async function loadStores() {
     try {
@@ -60,6 +74,7 @@
       const { date } = await res.json();
       weekEndInput.value = date;
       updateHint(date);
+      updateYoyHint();
     } catch (e) {
       console.warn('無法取得預設日期', e);
     }
@@ -133,9 +148,13 @@
 
   generateBtn.addEventListener('click', async () => {
     const wkEnd = weekEndInput.value;
+    const yoyEnd = yoyEndInput.value;   // 留空 → 後端沿用週結束日
     const shopId = shopSelect.value;
     if (!shopId) { alert('請選擇門市'); return; }
     if (!wkEnd)  { alert('請選擇週結束日期'); return; }
+    if (yoyEnd && yoyEnd < wkEnd) {
+      if (!confirm(`年對年截止日（${yoyEnd}）早於週結束日（${wkEnd}），確定要這樣產生嗎？`)) return;
+    }
 
     logBox.innerHTML = '';
     seenCount = 0;
@@ -147,7 +166,7 @@
       const res  = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shopId, weekEnd: wkEnd }),
+        body: JSON.stringify({ shopId, weekEnd: wkEnd, yoyEnd: yoyEnd || '' }),
       });
       const data = await res.json();
       if (!res.ok || data.error) {

@@ -156,6 +156,7 @@ def parse_args():
     p.add_argument('--version',    action='store_true', help='顯示版本號後結束')
     p.add_argument('--week-start', required=False)
     p.add_argument('--week-end',   required=False)
+    p.add_argument('--yoy-end',    required=False, help='Sheet 10/11 年對年截止日（YYYY-MM-DD）；預設＝週結束日')
     p.add_argument('--data-dir',   required=False)
     p.add_argument('--template',   required=False)
     p.add_argument('--output',     required=False)
@@ -1003,24 +1004,27 @@ def fill_sheet9(ws, df_cur, sacare_prices, dates: dict):
         total = sum(ws.cell(row=r, column=col).value or 0 for r in emp_rows_9)
         ws.cell(row=total_row, column=col).value = total or None
 
-# ─── Sheet 10/11 共用：YOY 累積截止日（以本週末日為準）────────────────────────
-def _yoy_period_ends(dates: dict) -> 'tuple[date, date]':
-    """回傳 (今年截止日, 去年截止日)。
-    今年 = 本週末日；去年 = 去年同月同日（2/29 等不存在時取當月最後一天）。"""
-    wk_end = dates['wk_end']
-    prev_year = wk_end.year - 1
-    last = monthrange(prev_year, wk_end.month)[1]
-    prv_e = date(prev_year, wk_end.month, min(wk_end.day, last))
-    return wk_end, prv_e
+# ─── Sheet 10/11 共用：YOY 累積區間 ───────────────────────────────────────────
+def _yoy_periods(dates: dict) -> 'tuple[date, date, date, date]':
+    """回傳 (今年起始, 今年截止, 去年起始, 去年截止)。
+    截止日預設為本週末日；若 dates 內有 'yoy_end'（前端自訂年對年截止日）則優先採用。
+    今年 = 截止日當年 1/1 ～ 截止日；去年 = 前一年 1/1 ～ 去年同月同日
+    （2/29 等不存在時取當月最後一天）。"""
+    end = dates.get('yoy_end') or dates['wk_end']
+    cur_year = end.year
+    prev_year = cur_year - 1
+    last = monthrange(prev_year, end.month)[1]
+    prv_e = date(prev_year, end.month, min(end.day, last))
+    return date(cur_year, 1, 1), end, date(prev_year, 1, 1), prv_e
 
 
 # ─── Sheet 10: 月報YOY（年對年累積比較）────────────────────────────────────────
 def fill_sheet10(ws, df_cur, df_prev, sacare_prices, dates: dict):
     print('  Sheet 10: 月報YOY', flush=True)
-    # 累積區間：今年 1/1～本週末、去年 1/1～去年同日（以週末日為準，不受跨月影響）
-    cur_e, prv_e = _yoy_period_ends(dates)
-    cur = calc_metrics(period(df_cur,  dates['ytd_cur_start'], cur_e), sacare_prices)
-    prv = calc_metrics(period(df_prev, dates['ytd_prv_start'], prv_e), sacare_prices)
+    # 累積區間：今年 1/1～截止日、去年 1/1～去年同日（截止日預設週末，可由前端自訂）
+    cur_s, cur_e, prv_s, prv_e = _yoy_periods(dates)
+    cur = calc_metrics(period(df_cur,  cur_s, cur_e), sacare_prices)
+    prv = calc_metrics(period(df_prev, prv_s, prv_e), sacare_prices)
 
     # row -> (key, type)；type: m=金額/台數, p=比率(num,den), s=特例
     rows = {
@@ -1095,8 +1099,7 @@ def fill_sheet11(ws, df_cur, df_prev, sacare_prices, dates: dict):
         sa['SA_NET'] = sa['存貨代碼'].astype(str).str.strip().map(sacare_prices) * sa['數量'].fillna(0)
         return int(sa['SA_NET'].sum())
 
-    cur_e, prv_e = _yoy_period_ends(dates)
-    cur_s, prv_s = dates['ytd_cur_start'], dates['ytd_prv_start']
+    cur_s, cur_e, prv_s, prv_e = _yoy_periods(dates)
 
     def write_row(row, b, c):
         # C 去年度累積、D 今年度累積、E 差異金額、F 差異比例
@@ -1211,6 +1214,9 @@ def main():
         ytd_cur_start=date(year, 1, 1),
         ytd_prv_start=date(prev_year, 1, 1),
     )
+    if args.yoy_end:
+        dates['yoy_end'] = date.fromisoformat(args.yoy_end)
+        print(f'  年對年截止日(自訂): {dates["yoy_end"]}')
 
     print(f'  本月: {mo_start} ~ {mo_end}')
     print(f'  上月: {lm_start} ~ {lm_end}')
