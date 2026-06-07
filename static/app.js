@@ -14,6 +14,9 @@
   const yoyRangeHint  = $('yoyRangeHint');
   const empCountInput = $('empCount');
   const empCountHint  = $('empCountHint');
+  const advPeriods    = $('advPeriods');
+  const ADV_FIELDS    = ['prevWkStart','prevWkEnd','wkStart','wkEnd',
+                         'moStart','moEnd','lmStart','lmEnd','lyStart','lyEnd'];
   const stUser        = $('stUser');
   const stPass        = $('stPass');
   const stSaveBtn     = $('stSaveBtn');
@@ -55,7 +58,27 @@
     yoyRangeHint.textContent = `年對年比較：${y-1}/01/01～${y-1}/${md} vs ${y}/01/01～${y}/${md}${note}`;
   }
 
-  weekEndInput.addEventListener('change', () => { updateHint(weekEndInput.value); updateYoyHint(); });
+  async function fetchPeriodDefaults() {
+    const wkEnd = weekEndInput.value;
+    if (!wkEnd) return;
+    try {
+      const res = await fetch(`/api/periods?weekEnd=${encodeURIComponent(wkEnd)}`);
+      if (!res.ok) return;
+      const d = await res.json();
+      ADV_FIELDS.forEach(k => { if (d[k]) $(k).value = d[k]; });
+    } catch (e) { /* ignore */ }
+  }
+
+  advPeriods.addEventListener('toggle', () => {
+    // 展開時，若欄位空白則帶入目前週結束日推算的預設值
+    if (advPeriods.open && !$('wkEnd').value) fetchPeriodDefaults();
+  });
+
+  weekEndInput.addEventListener('change', () => {
+    updateHint(weekEndInput.value);
+    updateYoyHint();
+    if (advPeriods.open) fetchPeriodDefaults();   // 面板開啟時同步刷新預設區間
+  });
   yoyEndInput.addEventListener('change', updateYoyHint);
 
   async function loadStores() {
@@ -236,11 +259,18 @@
     progressLabel.textContent = '準備中…';
     show(progressCard);
 
+    const body = { shopId, weekEnd: wkEnd, yoyEnd: yoyEnd || '', employeeCount: empCount };
+    if (advPeriods.open) {
+      const periods = {};
+      ADV_FIELDS.forEach(k => { const v = $(k).value; if (v) periods[k] = v; });
+      if (Object.keys(periods).length) body.periods = periods;
+    }
+
     try {
       const res  = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shopId, weekEnd: wkEnd, yoyEnd: yoyEnd || '', employeeCount: empCount }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok || data.error) {

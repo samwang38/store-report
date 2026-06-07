@@ -198,6 +198,45 @@ def compute_periods(wk_start, wk_end):
     }
 
 
+# 進階「自訂計算區間」：前端欄位名 → dates 鍵（本週 wkStart/wkEnd 在 compute_periods 前已套用為基準）
+PERIOD_OVERRIDE_KEYS = {
+    "prevWkStart": "prev_wk_start",
+    "prevWkEnd": "prev_wk_end",
+    "moStart": "mo_start",
+    "moEnd": "mo_end",
+    "lmStart": "lm_start",
+    "lmEnd": "lm_end",
+    "lyStart": "ly_start",
+    "lyEnd": "ly_end",
+}
+
+# (起鍵, 迄鍵, 顯示名) 供區間合法性檢查
+PERIOD_PAIRS = [
+    ("prev_wk_start", "prev_wk_end", "上週"),
+    ("wk_start", "wk_end", "本週"),
+    ("mo_start", "mo_end", "本月"),
+    ("lm_start", "lm_end", "上月"),
+    ("ly_start", "ly_end", "去年同期"),
+]
+
+
+def apply_period_overrides(dates, overrides, log=lambda m: None):
+    """套用進階面板的自訂區間（提供才覆寫），並驗證各組起訖合法。"""
+    applied = []
+    for okey, dkey in PERIOD_OVERRIDE_KEYS.items():
+        raw = overrides.get(okey)
+        if raw:
+            dates[dkey] = parse_date(raw)
+            applied.append(dkey)
+    for skey, ekey, label in PERIOD_PAIRS:
+        if dates[ekey] < dates[skey]:
+            raise ValueError(f"{label}區間的結束日早於起始日")
+    if applied:
+        log(f"套用自訂區間：上週 {dates['prev_wk_start']}~{dates['prev_wk_end']}、"
+            f"本月 {dates['mo_start']}~{dates['mo_end']}、上月 {dates['lm_start']}~{dates['lm_end']}、"
+            f"去年同期 {dates['ly_start']}~{dates['ly_end']}")
+
+
 def compile_java(source_name):
     source = ROOT / source_name
     target = ROOT / source_name.replace(".java", ".class")
@@ -354,9 +393,11 @@ def load_epb_data(shop_id, dates, quarter_start):
     sacare_prices = engine.load_sacare(SACARE_PATH)
     # 納入 Sheet 10/11 年對年區間（截止日可由前端自訂，可能晚於週結束日）
     yoy_cur_s, yoy_cur_e, yoy_prv_s, yoy_prv_e = engine._yoy_periods(dates)
-    cur_start = min(dates["ytd_cur_start"], dates["prev_wk_start"], dates["lm_start"], quarter_start, yoy_cur_s)
-    cur_end = max(dates["mo_end"], dates["wk_end"], yoy_cur_e)
-    prv_start = min(dates["ytd_prv_start"], yoy_prv_s)
+    # df_cur 涵蓋上週/本週/本月/上月，df_prev 涵蓋去年同期；納入自訂覆寫區間邊界以確保資料齊全
+    cur_start = min(dates["ytd_cur_start"], dates["prev_wk_start"], dates["wk_start"],
+                    dates["mo_start"], dates["lm_start"], quarter_start, yoy_cur_s)
+    cur_end = max(dates["mo_end"], dates["wk_end"], dates["prev_wk_end"], dates["lm_end"], yoy_cur_e)
+    prv_start = min(dates["ytd_prv_start"], dates["ly_start"], yoy_prv_s)
     prv_end = max(dates["ly_end"], yoy_prv_e)
     df_cur = remote_sales_df(shop_id, cur_start, cur_end)
     df_prev = remote_sales_df(shop_id, prv_start, prv_end)
@@ -588,14 +629,17 @@ def serialize_periods(dates, quarter_start, fiscal_start, q_num, w_num):
 # ─── 報表組裝（移植自 live-report-app，加入 log 進度回呼）────────────────
 def build_report_workbook(payload, log=lambda m: None):
     shop_id = safe_shop_id(payload.get("shopId"))
+    overrides = payload.get("periods") or {}
     default_end = last_saturday()
     default_start = default_end - timedelta(days=6)
-    wk_start = parse_date(payload.get("weekStart"), default_start)
-    wk_end = parse_date(payload.get("weekEnd"), default_end)
+    # 本週基準：進階面板的 wkStart/wkEnd 優先，否則沿用主欄位
+    wk_start = parse_date(overrides.get("wkStart") or payload.get("weekStart"), default_start)
+    wk_end = parse_date(overrides.get("wkEnd") or payload.get("weekEnd"), default_end)
     if wk_end < wk_start:
         raise ValueError("本週結束日不可早於起始日")
     log(f"門市 {shop_id}　本週 {wk_start} ~ {wk_end}")
     dates = compute_periods(wk_start, wk_end)
+    apply_period_overrides(dates, overrides, log=log)
     # 年對年截止日（Sheet 10/11）：前端可自訂，留空則沿用本週結束日
     yoy_end = parse_date(payload.get("yoyEnd"), wk_end)
     dates["yoy_end"] = yoy_end
@@ -761,6 +805,29 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if p.path == "/api/stores":
                 self.send_json(200, list_stores())
+                return
+            if p.path == "/api/periods":
+                wk_end_s = qs.get("weekEnd", [""])[0]
+                if not wk_end_s:
+                    self.send_json(400, {"error": "缺少 weekEnd"})
+                    return
+                wk_end = parse_date(wk_end_s)
+                wk_start = parse_date(qs.get("wkStart", [""])[0], wk_end - timedelta(days=6))
+                if qs.get("wkEnd", [""])[0]:
+                    wk_end = parse_date(qs.get("wkEnd", [""])[0])
+                d = compute_periods(wk_start, wk_end)
+                self.send_json(200, {
+                    "prevWkStart": d["prev_wk_start"].isoformat(),
+                    "prevWkEnd": d["prev_wk_end"].isoformat(),
+                    "wkStart": d["wk_start"].isoformat(),
+                    "wkEnd": d["wk_end"].isoformat(),
+                    "moStart": d["mo_start"].isoformat(),
+                    "moEnd": d["mo_end"].isoformat(),
+                    "lmStart": d["lm_start"].isoformat(),
+                    "lmEnd": d["lm_end"].isoformat(),
+                    "lyStart": d["ly_start"].isoformat(),
+                    "lyEnd": d["ly_end"].isoformat(),
+                })
                 return
             if p.path == "/api/shoppertrak/status":
                 if traffic_mod is None:

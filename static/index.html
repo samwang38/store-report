@@ -3,82 +3,135 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f2f2f5">
   <title>門市報表製作</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <main class="app-shell">
-    <header class="topbar">
-      <div class="eyebrow">STORE REPORT GENERATOR</div>
-      <h1>門市報表製作</h1>
+  <div class="window">
+    <header class="titlebar">
+      <span class="traffic">
+        <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
+      </span>
+      <div class="titlebar-title">門市報表製作</div>
     </header>
 
-    <section class="card" id="configCard">
-      <h2>設定</h2>
-      <div class="form-row">
-        <label for="shopId">門市</label>
-        <select id="shopId"></select>
+    <main class="app-shell">
+      <div class="hero">
+        <div class="eyebrow">STORE REPORT GENERATOR</div>
+        <h1>門市報表製作</h1>
+        <p class="hero-sub">選擇門市與週期，一鍵產生 11 張週報。</p>
       </div>
-      <div class="form-row">
-        <label for="weekEnd">週結束日期（週六）</label>
-        <input type="date" id="weekEnd">
-      </div>
-      <p class="hint" id="weekRangeHint"></p>
-      <div class="form-row">
-        <label for="yoyEnd">年對年截止日（10/11 頁）</label>
-        <input type="date" id="yoyEnd">
-      </div>
-      <p class="hint" id="yoyRangeHint">留空則沿用週結束日</p>
-      <div class="form-row">
-        <label for="empCount">編制人數</label>
-        <input type="number" id="empCount" min="0" step="1" placeholder="例如 8">
-      </div>
-      <p class="hint" id="empCountHint">用於人均產值（總營業額 / 編制人數）。會記住上次輸入。</p>
-      <div class="actions">
-        <button class="primary-btn" id="generateBtn" type="button">產生報表</button>
-      </div>
-    </section>
 
-    <section class="card" id="shoppertrakCard">
-      <h2>來客數設定（ShopperTrak）</h2>
-      <p class="hint">帳密只儲存在本機，用於 Sheet 2／10 的來客數與提袋率。未設定則自動略過來客數。</p>
-      <div class="form-row">
-        <label for="stUser">帳號</label>
-        <input type="text" id="stUser" autocomplete="username" placeholder="ShopperTrak 帳號">
-      </div>
-      <div class="form-row">
-        <label for="stPass">密碼</label>
-        <input type="password" id="stPass" autocomplete="current-password" placeholder="ShopperTrak 密碼">
-      </div>
-      <div class="actions">
-        <button class="primary-btn" id="stSaveBtn" type="button">儲存帳密</button>
-        <button class="ghost-btn" id="stClearBtn" type="button">清除</button>
-      </div>
-      <p class="hint" id="stStatus"></p>
-    </section>
+      <section class="card" id="configCard" style="--i:0">
+        <h2 class="card-title">設定</h2>
+        <div class="group">
+          <div class="row">
+            <label class="row-label" for="shopId">門市</label>
+            <div class="row-control"><select id="shopId"></select></div>
+          </div>
+          <div class="row">
+            <label class="row-label" for="weekEnd">週結束日期<span class="row-sub">週六</span></label>
+            <div class="row-control"><input type="date" id="weekEnd"></div>
+          </div>
+          <div class="row">
+            <label class="row-label" for="yoyEnd">年對年截止日<span class="row-sub">10/11 頁</span></label>
+            <div class="row-control"><input type="date" id="yoyEnd"></div>
+          </div>
+        </div>
+        <p class="footnote" id="weekRangeHint"></p>
+        <p class="footnote" id="yoyRangeHint">留空則沿用週結束日。</p>
 
-    <section class="card" id="progressCard" hidden>
-      <h2>產生進度</h2>
-      <div class="progress-bar-wrap">
-        <div class="progress-bar" id="progressBar" style="width:0%"></div>
-      </div>
-      <p class="progress-label" id="progressLabel">準備中…</p>
-      <div class="log-box" id="logBox"></div>
-    </section>
+        <details id="advPeriods" class="adv-panel">
+          <summary><span class="chevron"></span>進階：自訂計算區間</summary>
+          <div class="adv-body">
+            <p class="footnote flush">展開後可手動指定各比較區間；任一欄留空則用自動推算值。</p>
+            <div class="adv-grid">
+              <span class="adv-label">上週</span>
+              <input type="date" id="prevWkStart" aria-label="上週起日">
+              <input type="date" id="prevWkEnd" aria-label="上週迄日">
 
-    <section class="card" id="downloadCard" hidden>
-      <h2>下載</h2>
-      <p id="downloadInfo"></p>
-      <button class="primary-btn" id="downloadBtn" type="button">下載 Excel</button>
-      <button class="ghost-btn" id="resetBtn" type="button">重新產生</button>
-    </section>
+              <span class="adv-label">本週</span>
+              <input type="date" id="wkStart" aria-label="本週起日">
+              <input type="date" id="wkEnd" aria-label="本週迄日">
 
-    <section class="card" id="errorCard" hidden>
-      <h2>發生錯誤</h2>
-      <p id="errorMsg" class="error-msg"></p>
-      <button class="ghost-btn" id="retryBtn" type="button">重試</button>
-    </section>
-  </main>
+              <span class="adv-label">本月</span>
+              <input type="date" id="moStart" aria-label="本月起日">
+              <input type="date" id="moEnd" aria-label="本月迄日">
+
+              <span class="adv-label">上月</span>
+              <input type="date" id="lmStart" aria-label="上月起日">
+              <input type="date" id="lmEnd" aria-label="上月迄日">
+
+              <span class="adv-label">去年同期</span>
+              <input type="date" id="lyStart" aria-label="去年同期起日">
+              <input type="date" id="lyEnd" aria-label="去年同期迄日">
+            </div>
+            <p class="footnote flush">「本月／上月／去年同期」跨月時自動帶入完整月份。年對年（10/11 頁）仍由上方「年對年截止日」控制。</p>
+          </div>
+        </details>
+
+        <div class="group">
+          <div class="row">
+            <label class="row-label" for="empCount">編制人數</label>
+            <div class="row-control"><input type="number" id="empCount" min="0" step="1" placeholder="例如 8"></div>
+          </div>
+        </div>
+        <p class="footnote" id="empCountHint">用於人均產值（總營業額 / 編制人數）。會記住上次輸入。</p>
+
+        <div class="actions">
+          <button class="primary-btn" id="generateBtn" type="button">產生報表</button>
+        </div>
+      </section>
+
+      <section class="card" id="shoppertrakCard" style="--i:1">
+        <h2 class="card-title">來客數設定<span class="card-tag">ShopperTrak</span></h2>
+        <p class="card-desc">帳密只儲存在本機，用於 Sheet 2／10 的來客數與提袋率。未設定則自動略過來客數。</p>
+        <div class="group">
+          <div class="row">
+            <label class="row-label" for="stUser">帳號</label>
+            <div class="row-control"><input type="text" id="stUser" autocomplete="username" placeholder="ShopperTrak 帳號"></div>
+          </div>
+          <div class="row">
+            <label class="row-label" for="stPass">密碼</label>
+            <div class="row-control"><input type="password" id="stPass" autocomplete="current-password" placeholder="ShopperTrak 密碼"></div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary-btn" id="stSaveBtn" type="button">儲存帳密</button>
+          <button class="ghost-btn" id="stClearBtn" type="button">清除</button>
+        </div>
+        <p class="footnote" id="stStatus"></p>
+      </section>
+
+      <section class="card" id="progressCard" hidden>
+        <h2 class="card-title">產生進度</h2>
+        <div class="progress-bar-wrap">
+          <div class="progress-bar" id="progressBar" style="width:0%"></div>
+        </div>
+        <p class="progress-label" id="progressLabel">準備中…</p>
+        <div class="log-box" id="logBox"></div>
+      </section>
+
+      <section class="card" id="downloadCard" hidden>
+        <h2 class="card-title">下載</h2>
+        <p id="downloadInfo"></p>
+        <div class="actions">
+          <button class="primary-btn" id="downloadBtn" type="button">下載 Excel</button>
+          <button class="ghost-btn" id="resetBtn" type="button">重新產生</button>
+        </div>
+      </section>
+
+      <section class="card" id="errorCard" hidden>
+        <h2 class="card-title">發生錯誤</h2>
+        <p id="errorMsg" class="error-msg"></p>
+        <div class="actions">
+          <button class="ghost-btn" id="retryBtn" type="button">重試</button>
+        </div>
+      </section>
+    </main>
+  </div>
 
   <script src="/app.js"></script>
 </body>
