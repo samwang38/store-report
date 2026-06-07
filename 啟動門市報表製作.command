@@ -75,9 +75,15 @@ if ! command -v python3 &>/dev/null; then
 fi
 
 # ── 缺套件才安裝 ──────────────────────────────────────────────
-if ! python3 -c "import openpyxl, pandas" 2>/dev/null; then
+if ! python3 -c "import openpyxl, pandas, requests" 2>/dev/null; then
   echo "安裝必要套件中…"
-  pip3 install openpyxl pandas --quiet
+  pip3 install openpyxl pandas requests --quiet
+fi
+
+# ── 來客數查詢需要 Playwright（首次安裝較久，約 150MB）──────────
+if ! python3 -c "import playwright" 2>/dev/null; then
+  echo "安裝來客數查詢元件（Playwright）…"
+  pip3 install playwright --quiet && python3 -m playwright install chromium
 fi
 
 echo "啟動伺服器（port $PORT）…"

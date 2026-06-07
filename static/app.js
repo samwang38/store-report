@@ -1,7 +1,8 @@
 (() => {
   const $ = id => document.getElementById(id);
 
-  const configCard   = $('configCard');
+  const configCard      = $('configCard');
+  const shoppertrakCard = $('shoppertrakCard');
   const progressCard = $('progressCard');
   const downloadCard = $('downloadCard');
   const errorCard    = $('errorCard');
@@ -11,6 +12,13 @@
   const weekRangeHint = $('weekRangeHint');
   const yoyEndInput   = $('yoyEnd');
   const yoyRangeHint  = $('yoyRangeHint');
+  const empCountInput = $('empCount');
+  const empCountHint  = $('empCountHint');
+  const stUser        = $('stUser');
+  const stPass        = $('stPass');
+  const stSaveBtn     = $('stSaveBtn');
+  const stClearBtn    = $('stClearBtn');
+  const stStatus      = $('stStatus');
   const generateBtn   = $('generateBtn');
   const progressBar   = $('progressBar');
   const progressLabel = $('progressLabel');
@@ -63,6 +71,7 @@
         shopSelect.appendChild(opt);
       }
       if (data.default) shopSelect.value = data.default;
+      await loadShopConfig();
     } catch (e) {
       console.warn('無法取得門市清單', e);
     }
@@ -84,7 +93,71 @@
     [configCard, progressCard, downloadCard, errorCard].forEach(c => {
       c.hidden = (c !== card);
     });
+    // 設定卡與來客數設定一起顯示／隱藏
+    shoppertrakCard.hidden = (card !== configCard);
   }
+
+  async function loadShoppertrakStatus() {
+    try {
+      const res = await fetch('/api/shoppertrak/status');
+      const data = await res.json();
+      if (!data.available) {
+        stStatus.textContent = '（來客數模組未載入，將略過來客數）';
+        return;
+      }
+      if (data.username) stUser.value = data.username;
+      stStatus.textContent = data.hasCredentials ? '已儲存本機帳密' : '未儲存帳密';
+    } catch (e) {
+      stStatus.textContent = '';
+    }
+  }
+
+  async function loadShopConfig() {
+    const shopId = shopSelect.value;
+    if (!shopId) return;
+    try {
+      const res = await fetch(`/api/config?shopId=${encodeURIComponent(shopId)}`);
+      const data = await res.json();
+      empCountInput.value = (data.employeeCount != null) ? data.employeeCount : '';
+      empCountHint.textContent = data.hasSiteId
+        ? '用於人均產值（總營業額 / 編制人數）。會記住上次輸入。'
+        : '用於人均產值。注意：此門市無對應 ShopperTrak，將略過來客數。';
+    } catch (e) { /* ignore */ }
+  }
+
+  shopSelect.addEventListener('change', loadShopConfig);
+
+  stSaveBtn.addEventListener('click', async () => {
+    const username = stUser.value.trim();
+    const password = stPass.value;
+    if (!username || !password) { stStatus.textContent = '請輸入帳號與密碼'; return; }
+    stSaveBtn.disabled = true;
+    try {
+      const res = await fetch('/api/shoppertrak/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await res.json();
+      stStatus.textContent = (res.ok && data.ok) ? '已儲存本機帳密' : (data.error || '儲存失敗');
+      if (res.ok && data.ok) stPass.value = '';
+    } catch (e) {
+      stStatus.textContent = '儲存失敗：' + e.message;
+    } finally {
+      stSaveBtn.disabled = false;
+    }
+  });
+
+  stClearBtn.addEventListener('click', async () => {
+    try {
+      const res = await fetch('/api/shoppertrak/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clear: true }),
+      });
+      if (res.ok) { stUser.value = ''; stPass.value = ''; stStatus.textContent = '已清除帳密'; }
+    } catch (e) { /* ignore */ }
+  });
 
   function appendLog(text) {
     const cls = text.includes('✓') ? 'ok'
@@ -150,6 +223,7 @@
     const wkEnd = weekEndInput.value;
     const yoyEnd = yoyEndInput.value;   // 留空 → 後端沿用週結束日
     const shopId = shopSelect.value;
+    const empCount = empCountInput.value.trim();
     if (!shopId) { alert('請選擇門市'); return; }
     if (!wkEnd)  { alert('請選擇週結束日期'); return; }
     if (yoyEnd && yoyEnd < wkEnd) {
@@ -166,7 +240,7 @@
       const res  = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shopId, weekEnd: wkEnd, yoyEnd: yoyEnd || '' }),
+        body: JSON.stringify({ shopId, weekEnd: wkEnd, yoyEnd: yoyEnd || '', employeeCount: empCount }),
       });
       const data = await res.json();
       if (!res.ok || data.error) {
@@ -199,4 +273,5 @@
 
   loadStores();
   loadDefaultDate();
+  loadShoppertrakStatus();
 })();

@@ -29,9 +29,32 @@
         <input type="date" id="yoyEnd">
       </div>
       <p class="hint" id="yoyRangeHint">留空則沿用週結束日</p>
+      <div class="form-row">
+        <label for="empCount">編制人數</label>
+        <input type="number" id="empCount" min="0" step="1" placeholder="例如 8">
+      </div>
+      <p class="hint" id="empCountHint">用於人均產值（總營業額 / 編制人數）。會記住上次輸入。</p>
       <div class="actions">
         <button class="primary-btn" id="generateBtn" type="button">產生報表</button>
       </div>
+    </section>
+
+    <section class="card" id="shoppertrakCard">
+      <h2>來客數設定（ShopperTrak）</h2>
+      <p class="hint">帳密只儲存在本機，用於 Sheet 2／10 的來客數與提袋率。未設定則自動略過來客數。</p>
+      <div class="form-row">
+        <label for="stUser">帳號</label>
+        <input type="text" id="stUser" autocomplete="username" placeholder="ShopperTrak 帳號">
+      </div>
+      <div class="form-row">
+        <label for="stPass">密碼</label>
+        <input type="password" id="stPass" autocomplete="current-password" placeholder="ShopperTrak 密碼">
+      </div>
+      <div class="actions">
+        <button class="primary-btn" id="stSaveBtn" type="button">儲存帳密</button>
+        <button class="ghost-btn" id="stClearBtn" type="button">清除</button>
+      </div>
+      <p class="hint" id="stStatus"></p>
     </section>
 
     <section class="card" id="progressCard" hidden>

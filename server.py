@@ -27,6 +27,12 @@ from pathlib import Path
 import openpyxl
 import pandas as pd
 
+try:
+    import shoppertrak_traffic as traffic_mod
+except Exception as _exc:  # 缺套件等情況下仍讓 server 正常啟動
+    traffic_mod = None
+    _TRAFFIC_IMPORT_ERROR = str(_exc)
+
 
 ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = ROOT / "static"
@@ -363,6 +369,52 @@ def load_epb_data(shop_id, dates, quarter_start):
     }
 
 
+# ─── ShopperTrak 來客數（人流）─────────────────────────────────────────
+def _emp_count(payload):
+    v = payload.get("employeeCount", payload.get("employee_count"))
+    try:
+        return int(v) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def load_traffic(shop_id, dates, log=lambda m: None):
+    """回傳 (traffic_sheet2, traffic_sheet10)。
+    任何失敗（未裝套件 / 未設帳密 / 無 siteId / 登入或查詢錯誤）→ 回 ({}, {})，
+    並記錄 log，讓報表「略過來客數、其餘照常產生」。"""
+    if traffic_mod is None:
+        log("未載入來客數模組，略過來客數")
+        return {}, {}
+    if not traffic_mod.has_credentials():
+        log("未設定 ShopperTrak 帳密，略過來客數")
+        return {}, {}
+    if not traffic_mod.site_id_for_shop(shop_id):
+        log(f"門市 {shop_id} 無對應 ShopperTrak siteId，略過來客數")
+        return {}, {}
+
+    periods2 = {
+        "上週": (dates["prev_wk_start"], dates["prev_wk_end"]),
+        "本週": (dates["wk_start"], dates["wk_end"]),
+        "本月": (dates["mo_start"], dates["mo_end"]),
+        "上月": (dates["lm_start"], dates["lm_end"]),
+        "去年": (dates["ly_start"], dates["ly_end"]),
+    }
+    yoy_cur_s, yoy_cur_e, yoy_prv_s, yoy_prv_e = engine._yoy_periods(dates)
+    periods10 = {"cur": (yoy_cur_s, yoy_cur_e), "prv": (yoy_prv_s, yoy_prv_e)}
+
+    try:
+        t2, t10 = {}, {}
+        for name, (s, e) in periods2.items():
+            t2[name] = traffic_mod.get_traffic_total(shop_id, s, e, log=log)
+        for name, (s, e) in periods10.items():
+            t10[name] = traffic_mod.get_traffic_total(shop_id, s, e, log=log)
+        log(f"  來客數：本週 {t2.get('本週'):,} / 本月 {t2.get('本月'):,}")
+        return t2, t10
+    except Exception as exc:
+        log(f"  來客數查詢失敗，已略過：{exc}")
+        return {}, {}
+
+
 # ─── 免登入門市清單 ────────────────────────────────────────────────────
 def list_stores():
     """回傳所有可選門市。先嘗試 EPB 門市主檔（免使用者權限），
@@ -559,6 +611,11 @@ def build_report_workbook(payload, log=lambda m: None):
     df_cur, df_prev, sacare_prices, source_meta = load_epb_data(shop_id, dates, quarter_start)
     log(f"  取得 本期 {source_meta['currentRows']:,} 筆 / 去年 {source_meta['previousRows']:,} 筆")
 
+    emp_count = _emp_count(payload)
+    if emp_count:
+        log(f"編制人數：{emp_count} 人（人均產值 = 營業額 / 編制人數）")
+    traffic2, traffic10 = load_traffic(shop_id, dates, log=log)
+
     log("解析員工清單、重建個人 sheet…")
     employees = resolve_report_employees(df_cur, dates, template_employees)
     engine.EMPLOYEES = employees
@@ -568,12 +625,14 @@ def build_report_workbook(payload, log=lambda m: None):
 
     log("填入 1-5 報表…")
     engine.fill_sheet1(wb["1.主機銷售台數"], df_cur, quarter_start, wk_end)
-    engine.fill_sheet2(wb["2.門市週報 "], df_cur, df_prev, sacare_prices, dates)
+    engine.fill_sheet2(wb["2.門市週報 "], df_cur, df_prev, sacare_prices, dates,
+                       traffic=traffic2, emp_count=emp_count)
     engine.fill_sheet3(wb["3.3PP配件比較"], df_cur, df_prev, sacare_prices, dates)
     engine.fill_sheet45(wb["4.3PP 銷售排名"], wb["5.VAP銷售排名"], df_cur, sacare_prices, dates)
 
     log("填入 10-11 年對年報表…")
-    engine.fill_sheet10(wb["10.月報YOY"], df_cur, df_prev, sacare_prices, dates)
+    engine.fill_sheet10(wb["10.月報YOY"], df_cur, df_prev, sacare_prices, dates,
+                        traffic=traffic10, emp_count=emp_count)
     engine.fill_sheet11(wb["11.3PP YOY"], df_cur, df_prev, sacare_prices, dates)
 
     log("填入個人 6-9 報表…")
@@ -624,7 +683,7 @@ def build_report_excel(payload, log=lambda m: None):
 
 
 # ─── Job 管理（仿北一區週報-app）───────────────────────────────────────
-def _run_job(job_id, shop_id, wk_end_str):
+def _run_job(job_id, payload):
     def log(msg):
         ts = time.strftime("%H:%M:%S")
         with _LOCK:
@@ -634,13 +693,14 @@ def _run_job(job_id, shop_id, wk_end_str):
         JOBS[job_id]["status"] = "running"
 
     try:
-        wk_end = date.fromisoformat(wk_end_str)
-        wk_start = wk_end - timedelta(days=6)
-        payload = {
-            "shopId": shop_id,
-            "weekStart": wk_start.isoformat(),
-            "weekEnd": wk_end.isoformat(),
-        }
+        wk_end = date.fromisoformat(payload["weekEnd"])
+        payload.setdefault("weekStart", (wk_end - timedelta(days=6)).isoformat())
+        # 記住本店編制人數，下次預設帶入
+        if traffic_mod is not None and payload.get("employeeCount") not in (None, ""):
+            try:
+                traffic_mod.set_employee_count(payload["shopId"], payload["employeeCount"])
+            except Exception:
+                pass
         filename, body, meta = build_report_excel(payload, log=log)
         with _LOCK:
             JOBS[job_id]["status"] = "done"
@@ -702,6 +762,24 @@ class Handler(SimpleHTTPRequestHandler):
             if p.path == "/api/stores":
                 self.send_json(200, list_stores())
                 return
+            if p.path == "/api/shoppertrak/status":
+                if traffic_mod is None:
+                    self.send_json(200, {"available": False, "hasCredentials": False,
+                                         "username": ""})
+                    return
+                u, _ = traffic_mod.get_credentials()
+                self.send_json(200, {
+                    "available": True,
+                    "hasCredentials": traffic_mod.has_credentials(),
+                    "username": u or "",
+                })
+                return
+            if p.path == "/api/config":
+                shop_id = safe_shop_id(qs.get("shopId", [""])[0] or DEFAULT_SHOP_ID)
+                emp = traffic_mod.get_employee_count(shop_id) if traffic_mod else None
+                has_site = bool(traffic_mod and traffic_mod.site_id_for_shop(shop_id))
+                self.send_json(200, {"employeeCount": emp, "hasSiteId": has_site})
+                return
             if p.path == "/api/status":
                 job_id = qs.get("jobId", [""])[0]
                 with _LOCK:
@@ -740,6 +818,8 @@ class Handler(SimpleHTTPRequestHandler):
                 shop_id = safe_shop_id(payload.get("shopId"))
                 wk_end_s = str(payload.get("weekEnd", payload.get("week_end", ""))).strip()
                 date.fromisoformat(wk_end_s)
+                payload["shopId"] = shop_id
+                payload["weekEnd"] = wk_end_s
             except Exception as e:
                 self.send_json(400, {"error": f"參數錯誤: {e}"})
                 return
@@ -747,9 +827,30 @@ class Handler(SimpleHTTPRequestHandler):
             with _LOCK:
                 JOBS[job_id] = {"status": "pending", "messages": [], "result": None}
             threading.Thread(
-                target=_run_job, args=(job_id, shop_id, wk_end_s), daemon=True
+                target=_run_job, args=(job_id, payload), daemon=True
             ).start()
             self.send_json(200, {"jobId": job_id})
+            return
+        if p.path == "/api/shoppertrak/credentials":
+            if traffic_mod is None:
+                self.send_json(400, {"error": "來客數模組未載入"})
+                return
+            try:
+                body = self.read_body()
+            except Exception as e:
+                self.send_json(400, {"error": f"參數錯誤: {e}"})
+                return
+            if body.get("clear"):
+                traffic_mod.clear_credentials()
+                self.send_json(200, {"ok": True, "hasCredentials": False})
+                return
+            username = str(body.get("username", "")).strip()
+            password = str(body.get("password", ""))
+            if not username or not password:
+                self.send_json(400, {"error": "請輸入帳號與密碼"})
+                return
+            traffic_mod.set_credentials(username, password)
+            self.send_json(200, {"ok": True, "hasCredentials": True, "username": username})
             return
         self.send_json(404, {"error": "Not found"})
 

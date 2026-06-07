@@ -478,7 +478,7 @@ def fill_sheet1(ws, df_cur: pd.DataFrame, quarter_start: date, week_end: date):
         ws.cell(row=excel_row, column=16).value = total or None    # Total
 
 # ─── Sheet 2: 門市週報 ────────────────────────────────────────────────────────
-def fill_sheet2(ws, df_cur, df_prev, sacare_prices, dates: dict):
+def fill_sheet2(ws, df_cur, df_prev, sacare_prices, dates: dict, traffic=None, emp_count=None):
     print('  Sheet 2: 門市週報', flush=True)
 
     def get(df, start, end):
@@ -534,13 +534,25 @@ def fill_sheet2(ws, df_cur, df_prev, sacare_prices, dates: dict):
         sv(28, col, 'watch')
         sv(29, col, 'sa_watch')
         pct(30, col, 'sa_watch', 'watch')               # SA Watch搭售率
-        # Row 31 人均產值, 32 來客數 → skip
+        # Row 31 人均產值 = 總營業額 / 總員工數（編制人數，前端輸入）
+        if emp_count:
+            ws.cell(row=31, column=cols[col]).value = int(m.get('total_rev', 0) / emp_count)
+        # Row 32 來客數（ShopperTrak 人流；查不到則留空）
+        visitors = (traffic or {}).get(col)
+        if visitors is not None:
+            ws.cell(row=32, column=cols[col]).value = int(visitors)
         sv(33, col, 'txn_count')
-        # Row 34 提袋率 → skip (from POS)
+        # Row 34 提袋率 = 成交筆數 / 來客數（需有來客數）
+        if visitors:
+            ws.cell(row=34, column=cols[col]).value = safe_rate(m.get('txn_count', 0), visitors)
 
     # ── 計算差異欄位 D/E/H/J/K/M/N (全部用公式重算) ──────────────────────────
     # Active rows: the ones actually written by sv()/pct()
     active_rows = list(range(2, 31)) + [33]
+    if emp_count:
+        active_rows.append(31)                                   # 人均產值
+    if traffic and any(v is not None for v in traffic.values()):
+        active_rows += [32, 34]                                  # 來客數、提袋率
     for r in active_rows:
         B = ws.cell(row=r, column=2).value
         C = ws.cell(row=r, column=3).value
@@ -1019,7 +1031,7 @@ def _yoy_periods(dates: dict) -> 'tuple[date, date, date, date]':
 
 
 # ─── Sheet 10: 月報YOY（年對年累積比較）────────────────────────────────────────
-def fill_sheet10(ws, df_cur, df_prev, sacare_prices, dates: dict):
+def fill_sheet10(ws, df_cur, df_prev, sacare_prices, dates: dict, traffic=None, emp_count=None):
     print('  Sheet 10: 月報YOY', flush=True)
     # 累積區間：今年 1/1～截止日、去年 1/1～去年同日（截止日預設週末，可由前端自訂）
     cur_s, cur_e, prv_s, prv_e = _yoy_periods(dates)
@@ -1080,6 +1092,20 @@ def fill_sheet10(ws, df_cur, df_prev, sacare_prices, dates: dict):
         ws.cell(row=r, column=4).value = round(diff, 6) if is_pct else (int(diff) if diff else None)
         # E 差異比例 = 年差異 / 去年
         ws.cell(row=r, column=5).value = safe_rate(diff, b)
+
+    # row 31 人均產值（累積 = 累積總營業額 / 編制人數）、row 32 來客數（ShopperTrak）
+    def write_yoy(row, b, c):
+        ws.cell(row=row, column=2).value = int(b) if b else None
+        ws.cell(row=row, column=3).value = int(c) if c else None
+        d = (c or 0) - (b or 0)
+        ws.cell(row=row, column=4).value = int(d) if d else None
+        ws.cell(row=row, column=5).value = safe_rate(d, b)
+
+    if emp_count:
+        write_yoy(31, prv.get('total_rev', 0) / emp_count, cur.get('total_rev', 0) / emp_count)
+    t = traffic or {}
+    if t.get('prv') is not None or t.get('cur') is not None:
+        write_yoy(32, t.get('prv') or 0, t.get('cur') or 0)
 
 
 # ─── Sheet 11: 3PP YOY（各 3PP 類別年對年累積比較）─────────────────────────────
