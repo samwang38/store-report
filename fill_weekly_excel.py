@@ -156,7 +156,7 @@ def parse_args():
     p.add_argument('--version',    action='store_true', help='顯示版本號後結束')
     p.add_argument('--week-start', required=False)
     p.add_argument('--week-end',   required=False)
-    p.add_argument('--yoy-end',    required=False, help='Sheet 10/11 年對年截止日（YYYY-MM-DD）；預設＝週結束日')
+    p.add_argument('--yoy-end',    required=False, help='Sheet 12/13 年對年截止日（YYYY-MM-DD）；預設＝週結束日')
     p.add_argument('--data-dir',   required=False)
     p.add_argument('--template',   required=False)
     p.add_argument('--output',     required=False)
@@ -891,7 +891,7 @@ def calc_employee(df: pd.DataFrame, emp_code: str, sacare_prices: dict) -> dict:
 
 # ─── Sheet 6: 個人新制獎金 ────────────────────────────────────────────────────
 def fill_sheet6(ws, df_cur, sacare_prices, dates: dict):
-    print('  Sheet 6: 個人新制獎金', flush=True)
+    print('  Sheet 8: 個人新制獎金', flush=True)
     d_mo = period(df_cur, dates['mo_start'], dates['mo_end'])
     # 排除等級代碼 05（非全職／兼職員工，不納入獎金計算）
     if '等級代碼' in d_mo.columns:
@@ -929,7 +929,7 @@ def fill_sheet6(ws, df_cur, sacare_prices, dates: dict):
 
 # ─── Sheet 7/8: 個人週/月主機 ─────────────────────────────────────────────────
 def fill_sheet78(ws7, ws8, df_cur, sacare_prices, dates: dict):
-    print('  Sheet 7/8: 個人週/月主機', flush=True)
+    print('  Sheet 9/10: 個人週/月主機', flush=True)
     d_wk = period(df_cur, dates['wk_start'], dates['wk_end'])
     d_mo = period(df_cur, dates['mo_start'], dates['mo_end'])
 
@@ -993,7 +993,7 @@ def fill_sheet78(ws7, ws8, df_cur, sacare_prices, dates: dict):
 
 # ─── Sheet 9: 個人月3PP ───────────────────────────────────────────────────────
 def fill_sheet9(ws, df_cur, sacare_prices, dates: dict):
-    print('  Sheet 9: 個人月3PP', flush=True)
+    print('  Sheet 11: 個人月3PP', flush=True)
     d_mo = period(df_cur, dates['mo_start'], dates['mo_end'])
 
     for i, (code, _) in enumerate(EMPLOYEES):
@@ -1016,7 +1016,7 @@ def fill_sheet9(ws, df_cur, sacare_prices, dates: dict):
         total = sum(ws.cell(row=r, column=col).value or 0 for r in emp_rows_9)
         ws.cell(row=total_row, column=col).value = total or None
 
-# ─── Sheet 10/11 共用：YOY 累積區間 ───────────────────────────────────────────
+# ─── Sheet 12/13 共用：YOY 累積區間 ───────────────────────────────────────────
 def _yoy_periods(dates: dict) -> 'tuple[date, date, date, date]':
     """回傳 (今年起始, 今年截止, 去年起始, 去年截止)。
     截止日預設為本週末日；若 dates 內有 'yoy_end'（前端自訂年對年截止日）則優先採用。
@@ -1032,7 +1032,7 @@ def _yoy_periods(dates: dict) -> 'tuple[date, date, date, date]':
 
 # ─── Sheet 10: 月報YOY（年對年累積比較）────────────────────────────────────────
 def fill_sheet10(ws, df_cur, df_prev, sacare_prices, dates: dict, traffic=None, emp_count=None):
-    print('  Sheet 10: 月報YOY', flush=True)
+    print('  Sheet 12: 月報YOY', flush=True)
     # 累積區間：今年 1/1～截止日、去年 1/1～去年同日（截止日預設週末，可由前端自訂）
     cur_s, cur_e, prv_s, prv_e = _yoy_periods(dates)
     cur = calc_metrics(period(df_cur,  cur_s, cur_e), sacare_prices)
@@ -1110,7 +1110,7 @@ def fill_sheet10(ws, df_cur, df_prev, sacare_prices, dates: dict, traffic=None, 
 
 # ─── Sheet 11: 3PP YOY（各 3PP 類別年對年累積比較）─────────────────────────────
 def fill_sheet11(ws, df_cur, df_prev, sacare_prices, dates: dict):
-    print('  Sheet 11: 3PP YOY', flush=True)
+    print('  Sheet 13: 3PP YOY', flush=True)
     sa_codes = set(sacare_prices.keys())
 
     def c4_rev(df, start, end, c4_code):
@@ -1294,11 +1294,11 @@ def main():
     fill_sheet2(wb['2.門市週報 '],   df_cur, df_prev, sacare_prices, dates)
     fill_sheet3(wb['3.3PP配件比較'], df_cur, df_prev, sacare_prices, dates)
     fill_sheet45(wb['4.3PP 銷售排名'], wb['5.VAP銷售排名'], df_cur, sacare_prices, dates)
-    fill_sheet6(wb['6.個人新制獎金'], df_cur, sacare_prices, dates)
-    fill_sheet78(wb['7.個人週主機'], wb['8.個人月主機'], df_cur, sacare_prices, dates)
-    fill_sheet9(wb['9.個人月3PP'], df_cur, sacare_prices, dates)
-    fill_sheet10(wb['10.月報YOY'], df_cur, df_prev, sacare_prices, dates)
-    fill_sheet11(wb['11.3PP YOY'], df_cur, df_prev, sacare_prices, dates)
+    fill_sheet6(wb['8.個人新制獎金'], df_cur, sacare_prices, dates)
+    fill_sheet78(wb['9.個人週主機'], wb['10.個人月主機'], df_cur, sacare_prices, dates)
+    fill_sheet9(wb['11.個人月3PP'], df_cur, sacare_prices, dates)
+    fill_sheet10(wb['12.月報YOY'], df_cur, df_prev, sacare_prices, dates)
+    fill_sheet11(wb['13.3PP YOY'], df_cur, df_prev, sacare_prices, dates)
 
     wb.save(output)
     print(f'\n✓ 完成: {output}')

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """門市報表製作 — 本機 Web 工具
 
-可下拉選任一門市，產生該門市的士林式 9 張週報（含個人項目動態填入）。
+可下拉選任一門市，產生該門市的士林式 13 張週報（含個人項目動態填入）。
 EPB 即時查詢免登入，採用「選日期 → 背景產生 → 下載」的非同步流程。
 
-報表核心（EPB 查詢 / 9 張填表 / 個人項目動態填入）移植自 live-report-app，
+報表核心（EPB 查詢 / 13 張填表 / 個人項目動態填入）移植自 live-report-app，
 邏輯零改動；本檔僅去掉登入閘、改成非同步任務佇列、加上免登入門市下拉。
 """
 import copy
@@ -33,6 +33,12 @@ try:
 except Exception as _exc:  # 缺套件等情況下仍讓 server 正常啟動
     traffic_mod = None
     _TRAFFIC_IMPORT_ERROR = str(_exc)
+
+try:
+    import dss_client as dss_mod
+except Exception as _exc:
+    dss_mod = None
+    _DSS_IMPORT_ERROR = str(_exc)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -90,12 +96,14 @@ REPORT_SHEETS = [
     "3.3PP配件比較",
     "4.3PP 銷售排名",
     "5.VAP銷售排名",
-    "6.個人新制獎金",
-    "7.個人週主機",
-    "8.個人月主機",
-    "9.個人月3PP",
-    "10.月報YOY",
-    "11.3PP YOY",
+    "6.搭售統計_週",
+    "7.搭售統計_月",
+    "8.個人新制獎金",
+    "9.個人週主機",
+    "10.個人月主機",
+    "11.個人月3PP",
+    "12.月報YOY",
+    "13.3PP YOY",
 ]
 
 TRANS_TYPE_MAP = {
@@ -436,7 +444,7 @@ def load_sacare_cached():
 
 def load_epb_data(shop_id, dates, quarter_start):
     sacare_prices = load_sacare_cached()
-    # 納入 Sheet 10/11 年對年區間（截止日可由前端自訂，可能晚於週結束日）
+    # 納入 Sheet 12/13 年對年區間（截止日可由前端自訂，可能晚於週結束日）
     yoy_cur_s, yoy_cur_e, yoy_prv_s, yoy_prv_e = engine._yoy_periods(dates)
     # df_cur 涵蓋上週/本週/本月/上月，df_prev 涵蓋去年同期；納入自訂覆寫區間邊界以確保資料齊全
     cur_start = min(dates["ytd_cur_start"], dates["prev_wk_start"], dates["wk_start"],
@@ -512,6 +520,331 @@ def load_traffic(shop_id, dates, log=lambda m: None):
     except Exception as exc:
         log(f"  來客數查詢失敗，已略過：{exc}")
         return {}, {}
+
+
+# ─── DSS 搭售統計（Sheet 6/7）─────────────────────────────────────────
+# Sheet 6「搭售統計_週」：本期＝本週（週日～週六），歷史 3 列＝前 3 個完整週（W{財務季週次}）
+# Sheet 7「搭售統計_月」：本期＝本月 1 日～週結束日，歷史 3 列＝前 3 個完整日曆月（{n}月）
+# 定義（2026-06 與 DSS「3PP搭售率報表(人)」逐格核對確認）：
+#   m=搭售台數（有搭配件的主機）、s=配件數、ms=零搭售台數
+#   搭售率=s/m、零搭售比例=ms/(m+ms)、AA 3PP搭售率=Σs/Σm
+
+BUNDLE_SHEET_WEEK = "6.搭售統計_週"
+BUNDLE_SHEET_MONTH = "7.搭售統計_月"
+# 各機種欄位起點（B/G/L/Q/V），每組 5 欄：台數、配件、搭售率、零搭售、零搭售比例
+BUNDLE_GROUP_COLS = (("cpu", 2), ("iphone", 7), ("ipad", 12),
+                     ("watch", 17), ("airpods", 22))
+BUNDLE_3PP_COL = 27  # AA
+
+
+def load_bundle_stats(shop_id, wk_start, wk_end, fiscal_start, log=lambda m: None):
+    """抓搭售統計（8 個區間）。預設 EPB 直接計算（免登入），失敗自動退 DSS。
+
+    local_config.json 可設 "bundleSource": "dss" 強制改回 DSS 為主。
+    EPB 演算法與 DSS 經 5 週 155 數據點驗證（154 吻合，唯一差異為 DSS 端漏單）。
+    失敗回 None → 略過 Sheet 6/7。
+    """
+    periods = {("w", 0): (wk_start, wk_end)}
+    for i in (1, 2, 3):
+        s = wk_start - timedelta(days=7 * i)
+        periods[("w", i)] = (s, s + timedelta(days=6))
+    mo_first = wk_end.replace(day=1)
+    periods[("m", 0)] = (mo_first, wk_end)
+    cursor = mo_first
+    for i in (1, 2, 3):
+        last_end = cursor - timedelta(days=1)
+        periods[("m", i)] = (last_end.replace(day=1), last_end)
+        cursor = last_end.replace(day=1)
+
+    # bundleSource=dss → 強制只用 DSS（不退回 EPB）；預設 EPB 為主、DSS 備援
+    forced_dss = bool(traffic_mod and traffic_mod.load_config().get("bundleSource") == "dss")
+    order = ["dss"] if forced_dss else ["epb", "dss"]
+
+    def via_epb():
+        span_lo = min(s for s, _ in periods.values())
+        span_hi = max(e for _, e in periods.values())
+        prefetched = _epb_bundle_query(shop_id, span_lo, span_hi)
+        return {key: epb_bundle_stats(shop_id, s, e, _prefetched=prefetched)
+                for key, (s, e) in periods.items()}
+
+    def via_dss():
+        if dss_mod is None:
+            raise RuntimeError("DSS 模組未載入")
+        if not dss_mod.is_logged_in():
+            raise RuntimeError("DSS 未登入")
+        results = {}
+        items = list(periods.items())
+        # 第一個區間先單獨查（確認 session / 取 CSRF），其餘並行
+        first_key, (fs, fe) = items[0]
+        results[first_key] = dss_mod.fetch_bundle_stats(shop_id, fs, fe, log=log)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(dss_mod.fetch_bundle_stats, shop_id, s, e): key
+                       for key, (s, e) in items[1:]}
+            for fut, key in futures.items():
+                results[key] = fut.result()
+        return results
+
+    results = None
+    for source in order:
+        try:
+            results = via_epb() if source == "epb" else via_dss()
+            log(f"  搭售統計來源：{source.upper()}{'（強制 DSS）' if forced_dss else ''}")
+            break
+        except Exception as exc:
+            log(f"  搭售統計 {source.upper()} 查詢失敗：{exc}")
+    if results is None:
+        log("  ✗ 搭售統計無法取得，略過 Sheet 6/7"
+            + ("（強制 DSS 模式：請先登入 DSS 或取消強制）" if forced_dss else ""))
+        return None
+
+    def label_week(idx):
+        s = periods[("w", idx)][0]
+        if fiscal_start:
+            _, w_num = engine.compute_fiscal_week_number(s, fiscal_start)
+            return f"W{w_num}"
+        return f"前{idx}週"
+
+    return {
+        "week": {
+            "current": results[("w", 0)],
+            "history": [(label_week(i), results[("w", i)]) for i in (1, 2, 3)],
+        },
+        "month": {
+            "current": results[("m", 0)],
+            "history": [(f"{periods[('m', i)][0].month}月", results[("m", i)])
+                        for i in (1, 2, 3)],
+        },
+    }
+
+
+def _bundle_totals(rows):
+    tot = {k: {"m": 0, "s": 0, "ms": 0} for k, _ in BUNDLE_GROUP_COLS}
+    for r in rows:
+        for k in tot:
+            for f in ("m", "s", "ms"):
+                tot[k][f] += (r.get(k) or {}).get(f, 0)
+    return tot
+
+
+def _write_bundle_row(ws, row, label, stats):
+    ws.cell(row=row, column=1).value = label
+    sum_m = sum_s = 0
+    for k, base in BUNDLE_GROUP_COLS:
+        g = stats.get(k) or {"m": 0, "s": 0, "ms": 0}
+        m, s, ms = g["m"], g["s"], g["ms"]
+        sum_m += m
+        sum_s += s
+        ws.cell(row=row, column=base).value = m
+        ws.cell(row=row, column=base + 1).value = s
+        ws.cell(row=row, column=base + 2).value = round(s / m, 2) if m else None
+        ws.cell(row=row, column=base + 3).value = ms
+        ws.cell(row=row, column=base + 4).value = round(ms / (m + ms), 2) if (m + ms) else None
+    ws.cell(row=row, column=BUNDLE_3PP_COL).value = round(sum_s / sum_m, 2) if sum_m else None
+
+
+def _fill_bundle_sheet(ws, data, employees):
+    """employees=[(code, name)]；員工列依報表員工順序，配 DSS emp_id 對應資料。"""
+    by_id = {r["empId"]: r for r in data["current"]}
+    matched = set()
+    rows = []
+    for code, name in employees:
+        r = by_id.get(code)
+        if r:
+            matched.add(code)
+        dss_name = (r or {}).get("empName") or ""
+        # EPB 來源的 empName=員工代碼，改用報表員工名
+        display = dss_name if (dss_name and dss_name != code) else name
+        rows.append((display, r or {}))
+    # DSS 有、但不在報表員工清單者也補列出，避免漏資料
+    for r in data["current"]:
+        if r["empId"] not in matched and any((r.get(k) or {}).get(f) for k, _ in BUNDLE_GROUP_COLS for f in ("m", "s", "ms")):
+            rows.append((r.get("empName") or r["empId"], r))
+
+    # 調整員工列數：模板第 2 列起至 Total 前一列
+    total_row = next(
+        (r for r in range(2, ws.max_row + 1) if str(ws.cell(row=r, column=1).value).strip() == "Total"),
+        None,
+    )
+    if total_row is None:
+        raise RuntimeError(f"{ws.title}：找不到 Total 列")
+    slots = total_row - 2
+    if len(rows) > slots:
+        ws.insert_rows(total_row, len(rows) - slots)
+        for r in range(total_row, total_row + len(rows) - slots):
+            for c in range(1, ws.max_column + 1):
+                ws.cell(row=r, column=c)._style = copy.copy(ws.cell(row=2, column=c)._style)
+        total_row += len(rows) - slots
+    elif len(rows) < slots:
+        ws.delete_rows(2 + len(rows), slots - len(rows))
+        total_row -= slots - len(rows)
+
+    for i, (display, r) in enumerate(rows):
+        _write_bundle_row(ws, 2 + i, display, r)
+    _write_bundle_row(ws, total_row, "Total", _bundle_totals(data["current"]))
+    for j, (label, hist_rows) in enumerate(data["history"]):
+        _write_bundle_row(ws, total_row + 1 + j, label, _bundle_totals(hist_rows))
+
+
+def fill_bundle_sheets(wb, bundle, employees, log=lambda m: None):
+    _fill_bundle_sheet(wb[BUNDLE_SHEET_WEEK], bundle["week"], employees)
+    _fill_bundle_sheet(wb[BUNDLE_SHEET_MONTH], bundle["month"], employees)
+
+
+# ─── EPB 並行計算搭售統計（反推 DSS 規則，2026-06 當週 231 列明細逐列驗證一致）──
+# 規則（與 DSS「3PP搭售率報表」完全重現）：
+#   主機：C3=3001 且 C4∈{4001,4002}=CPU / 4004=iPhone / {4005,4006,4041}=iPad / 4038=Watch；
+#         AirPods＝C3=3002 且 C4=4014 且 C6∈C6_AIRPODS
+#   配件：C3=3003（3PP）。歸類：自身 C4 類別若在同單主機類別中→該類；
+#         否則跟著同單唯一主機類；無主機單→跟著同 VIP 當日主機類（VIP 當日無主機→不計）
+#   搭售：每單每類別有歸類配件時，該類「1 台」記搭售、其餘記零搭售（POS 組合販賣行為）；
+#         純配件單可讓同 VIP 同日同類別尚無搭售的 1 台零搭售升級為搭售
+#   交易：A/H 正計、E 負計（qty 相加自然沖銷）
+
+BUNDLE_EPB_OWN_C4 = {4007.0: "cpu", 4009.0: "iphone", 4010.0: "ipad",
+                     4039.0: "watch", 4069.0: "airpods",
+                     4022.0: "iphone", 4012.0: "iphone"}
+
+
+BUNDLE_CERT_BRANDS = {881.0, 885.0, 886.0, 888.0}   # 認證機/整新機品牌：bypass C3，DSS 一樣計主機
+
+
+def _bundle_mach_cat(c3, c4, c6, brand=None):
+    if c3 == 3001.0 or (brand in BUNDLE_CERT_BRANDS):
+        if c4 in (4001.0, 4002.0):
+            return "cpu"
+        if c4 == 4004.0:
+            return "iphone"
+        if c4 in (4005.0, 4006.0, 4041.0):
+            return "ipad"
+        if c4 == 4038.0:
+            return "watch"
+    if c4 == 4014.0 and c6 in engine.C6_AIRPODS:
+        return "airpods"
+    return None
+
+
+def _epb_bundle_query(shop_id, start_d, end_d):
+    headers, raw = run_remote(f"""
+select doc_id, trans_type, emp_id1, stk_qty,
+       cat3_id, cat4_id, cat6_id, brand_id, coalesce(vip_id,'') vip,
+       to_char(doc_date,'yyyymmdd') dd
+from poslinev_bi
+where shop_id = {quote_sql(str(shop_id))} and org_id = '01'
+  and doc_date >= to_date('{start_d.isoformat()}','yyyy-mm-dd')
+  and doc_date <  to_date('{(end_d + timedelta(days=1)).isoformat()}','yyyy-mm-dd')
+order by doc_id, line_no
+""", max_rows=200000)
+    return headers, raw
+
+
+def epb_bundle_stats(shop_id, start_d, end_d, _prefetched=None):
+    """以 EPB poslinev_bi 重現 DSS 搭售統計。回傳格式同 dss_client.fetch_bundle_stats。
+
+    _prefetched=(headers, raw)：跨期間共用同一次大區間查詢（VIP 配對以「日」為界，切片安全）。
+    """
+    headers, raw = _prefetched if _prefetched else _epb_bundle_query(shop_id, start_d, end_d)
+    idx = {c: i for i, c in enumerate(headers)}
+    lo, hi = start_d.strftime("%Y%m%d"), end_d.strftime("%Y%m%d")
+    raw = [r for r in raw if lo <= r[idx["DD"]] <= hi]
+
+    def numf(v):
+        try:
+            return float(str(v).replace(",", ""))
+        except (TypeError, ValueError):
+            return 0.0
+
+    docs = {}
+    for r in raw:
+        # 僅 A=銷售 / E=銷退 / H=尾款 進統計（DSS 明細不含 G 訂金 / J 退訂）
+        if r[idx["TRANS_TYPE"]] not in ("A", "E", "H"):
+            continue
+        docs.setdefault(r[idx["DOC_ID"]], []).append(r)
+
+    def doc_vip(lines):
+        v = (lines[0][idx["VIP"]] or "").strip()
+        return v if v not in ("", "0") else None   # 無會員不做跨單配對
+
+    # VIP-day 主機類別（3001 主機與 AirPods 分開記，歸類時 3001 優先）
+    vipday_m3001, vipday_mair = {}, {}
+    for lines in docs.values():
+        vip = doc_vip(lines)
+        if not vip:
+            continue
+        for r in lines:
+            g = _bundle_mach_cat(numf(r[idx["CAT3_ID"]]), numf(r[idx["CAT4_ID"]]),
+                                 numf(r[idx["CAT6_ID"]]), numf(r[idx["BRAND_ID"]]))
+            key = (vip, r[idx["DD"]])
+            if g == "airpods":
+                vipday_mair.setdefault(key, set()).add(g)
+            elif g:
+                vipday_m3001.setdefault(key, set()).add(g)
+
+    def pick_cat(own, cats):
+        """own C4 類別優先；否則唯一主機類別；多類別且 own 不在其中 → own（可能 None）。"""
+        if own in cats:
+            return own
+        if len(cats) == 1:
+            return next(iter(cats))
+        return own
+
+    entries = []   # (emp, cat, kind B/A/Z, qty, vip, dd)
+    free_acc = {}  # (vip, dd, cat) → 純配件單配件數
+    for lines in docs.values():
+        vip, dd = doc_vip(lines), lines[0][idx["DD"]]
+        machs, accs = [], []
+        for r in lines:
+            c3, c4, c6 = numf(r[idx["CAT3_ID"]]), numf(r[idx["CAT4_ID"]]), numf(r[idx["CAT6_ID"]])
+            g = _bundle_mach_cat(c3, c4, c6, numf(r[idx["BRAND_ID"]]))
+            if g:
+                machs.append((r, g))
+            elif c3 == 3003.0:
+                accs.append(r)
+        m3001 = {g for _, g in machs if g != "airpods"}
+        mair = {g for _, g in machs if g == "airpods"}
+        acc_cat_count = {}
+        for r in accs:
+            own = BUNDLE_EPB_OWN_C4.get(numf(r[idx["CAT4_ID"]]))
+            g, is_free = None, False
+            # 歸類優先序：同單 3001 主機 → 同單 AirPods → 同 VIP 當日 3001 → 當日 AirPods
+            for cats, free in ((m3001, False), (mair, False),
+                               (vipday_m3001.get((vip, dd), set()) if vip else set(), True),
+                               (vipday_mair.get((vip, dd), set()) if vip else set(), True)):
+                if cats:
+                    g, is_free = pick_cat(own, cats), free
+                    break
+            if g is None:
+                continue   # 無任何主機脈絡 → 不列入統計（與 DSS 明細一致）
+            if is_free:
+                key = (vip, dd, g)
+                free_acc[key] = free_acc.get(key, 0) + 1
+            acc_cat_count[g] = acc_cat_count.get(g, 0) + 1
+            entries.append((r[idx["EMP_ID1"]], g, "A", numf(r[idx["STK_QTY"]]), vip, dd))
+        bycat = {}
+        for r, g in machs:
+            bycat.setdefault(g, []).append(r)
+        for g, ms in bycat.items():
+            for i, r in enumerate(ms):
+                kind = "B" if (acc_cat_count.get(g, 0) > 0 and i == 0) else "Z"
+                entries.append((r[idx["EMP_ID1"]], g, kind, numf(r[idx["STK_QTY"]]), vip, dd))
+
+    has_b = {(vip, dd, g) for _, g, kind, _, vip, dd in entries if kind == "B" and vip}
+    upgraded = set()
+    fixed = []
+    for emp, g, kind, qty, vip, dd in entries:
+        key = (vip, dd, g)
+        if (kind == "Z" and vip and free_acc.get(key, 0) > 0
+                and key not in has_b and key not in upgraded):
+            upgraded.add(key)
+            kind = "B"
+        fixed.append((emp, g, kind, qty))
+
+    by_emp = {}
+    for emp, g, kind, qty in fixed:
+        slot = by_emp.setdefault(emp, {k: {"m": 0, "s": 0, "ms": 0} for k in
+                                       ("cpu", "iphone", "ipad", "watch", "airpods")})
+        field = {"B": "m", "A": "s", "Z": "ms"}[kind]
+        slot[g][field] += int(qty)
+    return [{"empId": emp, "empName": emp, **stats} for emp, stats in sorted(by_emp.items())]
 
 
 # ─── 免登入門市清單 ────────────────────────────────────────────────────
@@ -616,10 +949,10 @@ def rebuild_employee_sheet(ws, employees, start_row, template_employee_count, to
 
 
 def rebuild_employee_report_sheets(wb, employees, template_employee_count):
-    rebuild_employee_sheet(wb["6.個人新制獎金"], employees, start_row=2, template_employee_count=template_employee_count)
-    rebuild_employee_sheet(wb["7.個人週主機"], employees, start_row=3, template_employee_count=template_employee_count)
-    rebuild_employee_sheet(wb["8.個人月主機"], employees, start_row=3, template_employee_count=template_employee_count)
-    rebuild_employee_sheet(wb["9.個人月3PP"], employees, start_row=2, template_employee_count=template_employee_count)
+    rebuild_employee_sheet(wb["8.個人新制獎金"], employees, start_row=2, template_employee_count=template_employee_count)
+    rebuild_employee_sheet(wb["9.個人週主機"], employees, start_row=3, template_employee_count=template_employee_count)
+    rebuild_employee_sheet(wb["10.個人月主機"], employees, start_row=3, template_employee_count=template_employee_count)
+    rebuild_employee_sheet(wb["11.個人月3PP"], employees, start_row=2, template_employee_count=template_employee_count)
 
 
 def cell_has_sales_number(value):
@@ -635,10 +968,10 @@ def row_has_report_numbers(ws, row):
 
 def employee_has_report_numbers(wb, employee_index):
     checks = [
-        ("6.個人新制獎金", 2),
-        ("7.個人週主機", 3),
-        ("8.個人月主機", 3),
-        ("9.個人月3PP", 2),
+        ("8.個人新制獎金", 2),
+        ("9.個人週主機", 3),
+        ("10.個人月主機", 3),
+        ("11.個人月3PP", 2),
     ]
     for sheet_name, start_row in checks:
         if row_has_report_numbers(wb[sheet_name], start_row + employee_index):
@@ -655,7 +988,7 @@ def filter_employees_by_report_numbers(wb, employees):
 
 
 def finalize_known_formulas(wb):
-    ws = wb["6.個人新制獎金"]
+    ws = wb["8.個人新制獎金"]
     for row in range(2, ws.max_row + 1):
         b = ws.cell(row=row, column=2).value or 0
         c = ws.cell(row=row, column=3).value or 0
@@ -669,9 +1002,9 @@ def finalize_known_formulas(wb):
 
 
 def fill_employee_report_sheets(wb, df_cur, sacare_prices, dates):
-    engine.fill_sheet6(wb["6.個人新制獎金"], df_cur, sacare_prices, dates)
-    engine.fill_sheet78(wb["7.個人週主機"], wb["8.個人月主機"], df_cur, sacare_prices, dates)
-    engine.fill_sheet9(wb["9.個人月3PP"], df_cur, sacare_prices, dates)
+    engine.fill_sheet6(wb["8.個人新制獎金"], df_cur, sacare_prices, dates)
+    engine.fill_sheet78(wb["9.個人週主機"], wb["10.個人月主機"], df_cur, sacare_prices, dates)
+    engine.fill_sheet9(wb["11.個人月3PP"], df_cur, sacare_prices, dates)
     finalize_known_formulas(wb)
 
 
@@ -698,7 +1031,7 @@ def build_report_workbook(payload, log=lambda m: None):
     log(f"門市 {shop_id}　本週 {wk_start} ~ {wk_end}")
     dates = compute_periods(wk_start, wk_end)
     apply_period_overrides(dates, overrides, log=log)
-    # 年對年截止日（Sheet 10/11）：前端可自訂，留空則沿用本週結束日
+    # 年對年截止日（Sheet 12/13）：前端可自訂，留空則沿用本週結束日
     yoy_end = parse_date(payload.get("yoyEnd"), wk_end)
     dates["yoy_end"] = yoy_end
     if yoy_end != wk_end:
@@ -732,12 +1065,12 @@ def build_report_workbook(payload, log=lambda m: None):
     engine.fill_sheet3(wb["3.3PP配件比較"], df_cur, df_prev, sacare_prices, dates)
     engine.fill_sheet45(wb["4.3PP 銷售排名"], wb["5.VAP銷售排名"], df_cur, sacare_prices, dates)
 
-    log("填入 10-11 年對年報表…")
-    engine.fill_sheet10(wb["10.月報YOY"], df_cur, df_prev, sacare_prices, dates,
+    log("填入 12-13 年對年報表…")
+    engine.fill_sheet10(wb["12.月報YOY"], df_cur, df_prev, sacare_prices, dates,
                         traffic=traffic10, emp_count=emp_count)
-    engine.fill_sheet11(wb["11.3PP YOY"], df_cur, df_prev, sacare_prices, dates)
+    engine.fill_sheet11(wb["13.3PP YOY"], df_cur, df_prev, sacare_prices, dates)
 
-    log("填入個人 6-9 報表…")
+    log("填入個人 8-11 報表…")
     fill_employee_report_sheets(wb, df_cur, sacare_prices, dates)
 
     active_employees = filter_employees_by_report_numbers(wb, employees)
@@ -749,6 +1082,11 @@ def build_report_workbook(payload, log=lambda m: None):
         fill_employee_report_sheets(wb, df_cur, sacare_prices, dates)
         employees = active_employees
 
+    bundle = load_bundle_stats(shop_id, wk_start, wk_end, fiscal_start, log=log)
+    if bundle:
+        log("填入 6-7 搭售統計…")
+        fill_bundle_sheets(wb, bundle, employees, log=log)
+
     source_meta["employeeCount"] = len(employees)
     source_meta["employees"] = [{"code": code, "name": name} for code, name in employees]
 
@@ -756,8 +1094,8 @@ def build_report_workbook(payload, log=lambda m: None):
     if "設定" in wb.sheetnames:
         del wb["設定"]
 
-    # 修正 7/8 頁：引擎 fill_sheet78 從第 3 列起寫資料，第 2 列恆為空白 → 移除該空列
-    for sheet_name in ("7.個人週主機", "8.個人月主機"):
+    # 修正 9/10 頁：引擎 fill_sheet78 從第 3 列起寫資料，第 2 列恆為空白 → 移除該空列
+    for sheet_name in ("9.個人週主機", "10.個人月主機"):
         ws_fix = wb[sheet_name]
         if all(ws_fix.cell(row=2, column=c).value in (None, "") for c in range(1, ws_fix.max_column + 1)):
             ws_fix.delete_rows(2, 1)
@@ -850,6 +1188,13 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_png(self, body):
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def read_body(self):
         n = int(self.headers.get("Content-Length", 0))
         return json.loads(self.rfile.read(n).decode("utf-8") if n else "{}")
@@ -898,6 +1243,43 @@ class Handler(SimpleHTTPRequestHandler):
                     "hasCredentials": traffic_mod.has_credentials(),
                     "username": u or "",
                 })
+                return
+            if p.path == "/api/bundle/preview":
+                # 搭售統計兩源比對：?shopId=004&start=YYYY-MM-DD&end=YYYY-MM-DD&source=epb|dss|both
+                shop_id = safe_shop_id(qs.get("shopId", [""])[0] or DEFAULT_SHOP_ID)
+                start_s, end_s = qs.get("start", [""])[0], qs.get("end", [""])[0]
+                if not (start_s and end_s):
+                    self.send_json(400, {"error": "缺少 start / end（YYYY-MM-DD）"})
+                    return
+                start_d, end_d = parse_date(start_s), parse_date(end_s)
+                source = (qs.get("source", ["both"])[0] or "both").lower()
+                resp = {"shopId": shop_id, "start": start_d.isoformat(), "end": end_d.isoformat()}
+                if source in ("epb", "both"):
+                    resp["epb"] = epb_bundle_stats(shop_id, start_d, end_d)
+                if source in ("dss", "both"):
+                    try:
+                        resp["dss"] = dss_mod.fetch_bundle_stats(shop_id, start_d, end_d) if dss_mod else None
+                    except Exception as exc:
+                        resp["dssError"] = str(exc)
+                self.send_json(200, resp)
+                return
+            if p.path == "/api/dss/status":
+                force = bool(traffic_mod and traffic_mod.load_config().get("bundleSource") == "dss")
+                if dss_mod is None:
+                    self.send_json(200, {"available": False, "hasCredentials": False,
+                                         "username": "", "state": "idle", "error": "",
+                                         "force": force})
+                    return
+                payload = dss_mod.status()
+                payload["force"] = force
+                self.send_json(200, payload)
+                return
+            if p.path == "/api/dss/captcha":
+                png = dss_mod.get_captcha_png() if dss_mod else None
+                if not png:
+                    self.send_json(404, {"error": "目前沒有驗證碼，請先按「登入 DSS」"})
+                    return
+                self.send_png(png)
                 return
             if p.path == "/api/config":
                 shop_id = safe_shop_id(qs.get("shopId", [""])[0] or DEFAULT_SHOP_ID)
@@ -960,6 +1342,55 @@ class Handler(SimpleHTTPRequestHandler):
             ).start()
             self.send_json(200, {"jobId": job_id})
             return
+        if p.path.startswith("/api/dss/"):
+            if dss_mod is None:
+                self.send_json(400, {"error": "DSS 模組未載入"})
+                return
+            try:
+                body = self.read_body()
+            except Exception as e:
+                self.send_json(400, {"error": f"參數錯誤: {e}"})
+                return
+            if p.path == "/api/dss/credentials":
+                if body.get("clear"):
+                    dss_mod.clear_credentials()
+                    self.send_json(200, {"ok": True, "hasCredentials": False})
+                    return
+                username = str(body.get("username", "")).strip()
+                password = str(body.get("password", ""))
+                if not username or not password:
+                    self.send_json(400, {"error": "請輸入帳號與密碼"})
+                    return
+                dss_mod.set_credentials(username, password)
+                self.send_json(200, {"ok": True, "hasCredentials": True, "username": username})
+                return
+            if p.path == "/api/dss/force":
+                # 勾選「強制使用 DSS」：bundleSource=dss（不退回 EPB）；取消 → 預設 EPB 為主
+                if traffic_mod is None:
+                    self.send_json(400, {"error": "設定模組未載入"})
+                    return
+                cfg = traffic_mod.load_config()
+                if body.get("force"):
+                    cfg["bundleSource"] = "dss"
+                else:
+                    cfg.pop("bundleSource", None)
+                traffic_mod.save_config(cfg)
+                self.send_json(200, {"ok": True, "force": bool(body.get("force"))})
+                return
+            if p.path == "/api/dss/login/start":
+                self.send_json(200, dss_mod.start_login())
+                return
+            if p.path == "/api/dss/login/refresh-captcha":
+                self.send_json(200, dss_mod.refresh_captcha())
+                return
+            if p.path == "/api/dss/login/captcha":
+                self.send_json(200, dss_mod.submit_captcha(str(body.get("code", ""))))
+                return
+            if p.path == "/api/dss/login/otp":
+                self.send_json(200, dss_mod.submit_otp(str(body.get("code", ""))))
+                return
+            self.send_json(404, {"error": "Not found"})
+            return
         if p.path == "/api/shoppertrak/credentials":
             if traffic_mod is None:
                 self.send_json(400, {"error": "來客數模組未載入"})
@@ -993,6 +1424,15 @@ def main():
                 "  export EPB_JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_251.jdk/Contents/Home"
             )
     compile_java("EPBReportQuery.java")
+    if dss_mod is not None:
+        # 嘗試還原上次 DSS session（背景執行，不阻擋啟動）
+        def _dss_restore():
+            try:
+                if dss_mod.restore_session():
+                    print("DSS：已還原上次登入 session", flush=True)
+            except Exception:
+                pass
+        threading.Thread(target=_dss_restore, daemon=True).start()
     port = int(os.environ.get("PORT", "8783"))
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     print(f"門市報表製作：http://127.0.0.1:{port}", flush=True)

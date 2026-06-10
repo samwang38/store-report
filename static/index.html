@@ -21,7 +21,7 @@
       <div class="hero">
         <div class="eyebrow">STORE REPORT GENERATOR</div>
         <h1>門市報表製作</h1>
-        <p class="hero-sub">選擇門市與週期，一鍵產生 11 張週報。</p>
+        <p class="hero-sub">選擇門市與週期，一鍵產生 13 張週報。</p>
       </div>
 
       <section class="card" id="configCard" style="--i:0">
@@ -36,7 +36,7 @@
             <div class="row-control"><input type="date" id="weekEnd"></div>
           </div>
           <div class="row">
-            <label class="row-label" for="yoyEnd">年對年截止日<span class="row-sub">10/11 頁</span></label>
+            <label class="row-label" for="yoyEnd">年對年截止日<span class="row-sub">12/13 頁</span></label>
             <div class="row-control"><input type="date" id="yoyEnd"></div>
           </div>
         </div>
@@ -68,7 +68,7 @@
               <input type="date" id="lyStart" aria-label="去年同期起日">
               <input type="date" id="lyEnd" aria-label="去年同期迄日">
             </div>
-            <p class="footnote flush">「本月／上月／去年同期」跨月時自動帶入完整月份。年對年（10/11 頁）仍由上方「年對年截止日」控制。</p>
+            <p class="footnote flush">「本月／上月／去年同期」跨月時自動帶入完整月份。年對年（12/13 頁）仍由上方「年對年截止日」控制。</p>
           </div>
         </details>
 
@@ -86,8 +86,13 @@
       </section>
 
       <section class="card" id="shoppertrakCard" style="--i:1">
-        <h2 class="card-title">來客數設定<span class="card-tag">ShopperTrak</span></h2>
-        <p class="card-desc">帳密只儲存在本機，用於 Sheet 2／10 的來客數與提袋率。未設定則自動略過來客數。</p>
+        <details class="card-collapse">
+        <summary>
+          <span class="chevron"></span>
+          <span class="card-title collapse-title">來客數設定<span class="card-tag">ShopperTrak</span></span>
+          <span class="status-pill" id="stBadge">…</span>
+        </summary>
+        <p class="card-desc">帳密只儲存在本機，用於 Sheet 2／12 的來客數與提袋率。未設定則自動略過來客數。</p>
         <div class="group">
           <div class="row">
             <label class="row-label" for="stUser">帳號</label>
@@ -103,6 +108,69 @@
           <button class="ghost-btn" id="stClearBtn" type="button">清除</button>
         </div>
         <p class="footnote" id="stStatus"></p>
+        </details>
+      </section>
+
+      <section class="card" id="dssCard" style="--i:2">
+        <details class="card-collapse">
+        <summary>
+          <span class="chevron"></span>
+          <span class="card-title collapse-title">搭售統計設定<span class="card-tag">DSS</span></span>
+          <span class="status-pill" id="dssBadge">…</span>
+        </summary>
+        <p class="card-desc">Sheet 6／7 搭售統計預設由 EPB 直接計算（免登入）。DSS 登入作為備援與比對；勾選「強制使用 DSS」則只用 DSS。</p>
+        <div class="group">
+          <div class="row">
+            <label class="row-label" for="dssUser">帳號</label>
+            <div class="row-control"><input type="text" id="dssUser" autocomplete="off" placeholder="DSS（EPB）帳號"></div>
+          </div>
+          <div class="row">
+            <label class="row-label" for="dssPass">密碼</label>
+            <div class="row-control"><input type="password" id="dssPass" autocomplete="off" placeholder="DSS（EPB）密碼"></div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary-btn" id="dssSaveBtn" type="button">儲存帳密</button>
+          <button class="ghost-btn" id="dssClearBtn" type="button">清除</button>
+          <button class="primary-btn" id="dssLoginBtn" type="button">登入 DSS</button>
+        </div>
+        <div class="group" id="dssCaptchaGroup" hidden>
+          <div class="row">
+            <label class="row-label">驗證碼</label>
+            <div class="row-control dss-captcha-row">
+              <img id="dssCaptchaImg" alt="驗證碼" height="40">
+              <button class="ghost-btn" id="dssCaptchaRefreshBtn" type="button" title="換一張">↻</button>
+            </div>
+          </div>
+          <div class="row">
+            <label class="row-label" for="dssCaptchaInput">輸入驗證碼</label>
+            <div class="row-control">
+              <input type="text" id="dssCaptchaInput" inputmode="numeric" maxlength="6" placeholder="6 位數驗證碼">
+            </div>
+          </div>
+          <div class="actions">
+            <button class="primary-btn" id="dssCaptchaSubmitBtn" type="button">送出登入</button>
+          </div>
+        </div>
+        <div class="group" id="dssOtpGroup" hidden>
+          <div class="row">
+            <label class="row-label" for="dssOtpInput">Email 驗證碼</label>
+            <div class="row-control">
+              <input type="text" id="dssOtpInput" inputmode="numeric" placeholder="信箱收到的驗證碼">
+            </div>
+          </div>
+          <div class="actions">
+            <button class="primary-btn" id="dssOtpSubmitBtn" type="button">送出驗證碼</button>
+          </div>
+        </div>
+        <div class="group">
+          <label class="force-row" for="dssForce">
+            <input type="checkbox" id="dssForce">
+            <span>強制使用 DSS（不用 EPB 計算搭售統計；需保持 DSS 登入）</span>
+          </label>
+        </div>
+        <p class="footnote" id="dssStatus"></p>
+        </details>
       </section>
 
       <section class="card" id="progressCard" hidden>

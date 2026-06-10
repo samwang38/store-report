@@ -376,3 +376,48 @@ select {
   .row-control select,
   .row-control input { width: 100%; min-width: 0; }
 }
+
+/* DSS 搭售統計登入 */
+.dss-captcha-row { align-items: center; gap: 8px; }
+.dss-captcha-row img {
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: #fff;
+}
+
+/* 收合式設定卡（ShopperTrak / DSS） */
+.card-collapse > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  margin: -4px 0;
+}
+.card-collapse > summary::-webkit-details-marker { display: none; }
+.card-collapse > summary .collapse-title { margin: 0; }
+.card-collapse[open] > summary { margin-bottom: 10px; }
+.card-collapse[open] > summary .chevron { transform: rotate(45deg); }
+.status-pill {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text-3);
+}
+.status-pill.ok   { background: rgba(52, 199, 89, 0.14);  color: #1d8a3e; }
+.status-pill.warn { background: rgba(255, 149, 0, 0.16);  color: #b46506; }
+.status-pill.err  { background: rgba(255, 59, 48, 0.12);  color: #c0392b; }
+.force-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.force-row input { accent-color: #0a84ff; }

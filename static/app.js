@@ -17,6 +17,24 @@
   const advPeriods    = $('advPeriods');
   const ADV_FIELDS    = ['prevWkStart','prevWkEnd','wkStart','wkEnd',
                          'moStart','moEnd','lmStart','lmEnd','lyStart','lyEnd'];
+  const dssCard       = $('dssCard');
+  const stBadge       = $('stBadge');
+  const dssBadge      = $('dssBadge');
+  const dssForce      = $('dssForce');
+  const dssUser       = $('dssUser');
+  const dssPass       = $('dssPass');
+  const dssSaveBtn    = $('dssSaveBtn');
+  const dssClearBtn   = $('dssClearBtn');
+  const dssLoginBtn   = $('dssLoginBtn');
+  const dssCaptchaGroup = $('dssCaptchaGroup');
+  const dssCaptchaImg   = $('dssCaptchaImg');
+  const dssCaptchaRefreshBtn = $('dssCaptchaRefreshBtn');
+  const dssCaptchaInput = $('dssCaptchaInput');
+  const dssCaptchaSubmitBtn = $('dssCaptchaSubmitBtn');
+  const dssOtpGroup   = $('dssOtpGroup');
+  const dssOtpInput   = $('dssOtpInput');
+  const dssOtpSubmitBtn = $('dssOtpSubmitBtn');
+  const dssStatus     = $('dssStatus');
   const stUser        = $('stUser');
   const stPass        = $('stPass');
   const stSaveBtn     = $('stSaveBtn');
@@ -116,8 +134,14 @@
     [configCard, progressCard, downloadCard, errorCard].forEach(c => {
       c.hidden = (c !== card);
     });
-    // 設定卡與來客數設定一起顯示／隱藏
+    // 設定卡與來客數／DSS 設定一起顯示／隱藏
     shoppertrakCard.hidden = (card !== configCard);
+    dssCard.hidden = (card !== configCard);
+  }
+
+  function setBadge(el, text, cls) {
+    el.textContent = text;
+    el.className = 'status-pill' + (cls ? ' ' + cls : '');
   }
 
   async function loadShoppertrakStatus() {
@@ -126,12 +150,16 @@
       const data = await res.json();
       if (!data.available) {
         stStatus.textContent = '（來客數模組未載入，將略過來客數）';
+        setBadge(stBadge, '模組未載入', 'err');
         return;
       }
       if (data.username) stUser.value = data.username;
       stStatus.textContent = data.hasCredentials ? '已儲存本機帳密' : '未儲存帳密';
+      if (data.hasCredentials) setBadge(stBadge, '✓ 已設定帳密', 'ok');
+      else setBadge(stBadge, '未設定帳密', 'warn');
     } catch (e) {
       stStatus.textContent = '';
+      setBadge(stBadge, '—', '');
     }
   }
 
@@ -182,6 +210,178 @@
     } catch (e) { /* ignore */ }
   });
 
+  // ─── DSS（搭售統計）登入流程 ───────────────────────────────────────
+  const DSS_STATE_TEXT = {
+    idle: '未登入',
+    need_captcha: '請輸入圖形驗證碼',
+    need_otp: '需要 Email 驗證碼（請收信）',
+    logged_in: '✓ 已登入 DSS',
+    error: '',
+  };
+
+  let dssState = { state: 'idle', force: false };
+
+  function renderDssBadge(data) {
+    const forced = data.force ? '強制DSS · ' : '';
+    if (!data.available) { setBadge(dssBadge, '模組未載入', 'err'); return; }
+    if (data.state === 'logged_in') {
+      setBadge(dssBadge, forced + '✓ 已登入', 'ok');
+    } else if (data.state === 'need_captcha' || data.state === 'need_otp') {
+      setBadge(dssBadge, forced + '登入中…', 'warn');
+    } else if (data.force) {
+      // 強制 DSS 但未登入 → 醒目錯誤
+      setBadge(dssBadge, '強制DSS · ✗ 未登入', 'err');
+    } else {
+      setBadge(dssBadge, data.hasCredentials ? '未登入（用 EPB）' : '未設定（用 EPB）', '');
+    }
+  }
+
+  function renderDssState(data) {
+    dssState = data;
+    if (typeof data.force === 'boolean') dssForce.checked = data.force;
+    renderDssBadge(data);
+    if (!data.available) {
+      dssStatus.textContent = '（DSS 模組未載入，將略過搭售統計）';
+      dssCaptchaGroup.hidden = true;
+      dssOtpGroup.hidden = true;
+      return;
+    }
+    if (data.username && !dssUser.value) dssUser.value = data.username;
+    dssCaptchaGroup.hidden = (data.state !== 'need_captcha');
+    dssOtpGroup.hidden = (data.state !== 'need_otp');
+    if (data.state === 'need_captcha') {
+      dssCaptchaImg.src = `/api/dss/captcha?ts=${Date.now()}`;
+      dssCaptchaInput.value = '';
+      dssCaptchaInput.focus();
+    }
+    if (data.state === 'need_otp') {
+      dssOtpInput.value = '';
+      dssOtpInput.focus();
+    }
+    let text = DSS_STATE_TEXT[data.state] ?? '';
+    if (data.error) text = (text ? text + '　' : '') + data.error;
+    if (data.state === 'idle' && !data.hasCredentials) text = '未儲存帳密';
+    if (data.force && data.state !== 'logged_in') {
+      text = '⚠ 已勾選「強制使用 DSS」但目前未登入，產生報表時搭售統計（Sheet 6/7）會失敗。請先登入或取消勾選。';
+    }
+    dssStatus.textContent = text;
+  }
+
+  async function dssPost(path, body) {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    return res.json();
+  }
+
+  async function loadDssStatus() {
+    try {
+      renderDssState(await (await fetch('/api/dss/status')).json());
+    } catch (e) {
+      dssStatus.textContent = '';
+    }
+  }
+
+  dssSaveBtn.addEventListener('click', async () => {
+    const username = dssUser.value.trim();
+    const password = dssPass.value;
+    if (!username || !password) { dssStatus.textContent = '請輸入帳號與密碼'; return; }
+    dssSaveBtn.disabled = true;
+    try {
+      const data = await dssPost('/api/dss/credentials', { username, password });
+      dssStatus.textContent = data.ok ? '已儲存本機帳密，可按「登入 DSS」' : (data.error || '儲存失敗');
+      if (data.ok) dssPass.value = '';
+    } catch (e) {
+      dssStatus.textContent = '儲存失敗：' + e.message;
+    } finally {
+      dssSaveBtn.disabled = false;
+    }
+  });
+
+  dssClearBtn.addEventListener('click', async () => {
+    try {
+      const data = await dssPost('/api/dss/credentials', { clear: true });
+      if (data.ok) {
+        dssUser.value = ''; dssPass.value = '';
+        dssCaptchaGroup.hidden = true; dssOtpGroup.hidden = true;
+        dssStatus.textContent = '已清除帳密';
+      }
+    } catch (e) { /* ignore */ }
+  });
+
+  dssLoginBtn.addEventListener('click', async () => {
+    dssLoginBtn.disabled = true;
+    dssStatus.textContent = '連線 DSS 取得驗證碼…';
+    try {
+      renderDssState(await dssPost('/api/dss/login/start'));
+    } catch (e) {
+      dssStatus.textContent = '連線失敗：' + e.message;
+    } finally {
+      dssLoginBtn.disabled = false;
+    }
+  });
+
+  dssCaptchaRefreshBtn.addEventListener('click', async () => {
+    try { renderDssState(await dssPost('/api/dss/login/refresh-captcha')); } catch (e) { /* ignore */ }
+  });
+
+  dssCaptchaSubmitBtn.addEventListener('click', async () => {
+    const code = dssCaptchaInput.value.trim();
+    if (!code) { dssStatus.textContent = '請輸入驗證碼'; return; }
+    dssCaptchaSubmitBtn.disabled = true;
+    dssStatus.textContent = '登入中…';
+    try {
+      renderDssState(await dssPost('/api/dss/login/captcha', { code }));
+    } catch (e) {
+      dssStatus.textContent = '送出失敗：' + e.message;
+    } finally {
+      dssCaptchaSubmitBtn.disabled = false;
+    }
+  });
+
+  dssCaptchaInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') dssCaptchaSubmitBtn.click();
+  });
+
+  dssOtpSubmitBtn.addEventListener('click', async () => {
+    const code = dssOtpInput.value.trim();
+    if (!code) { dssStatus.textContent = '請輸入 Email 驗證碼'; return; }
+    dssOtpSubmitBtn.disabled = true;
+    dssStatus.textContent = '驗證中…';
+    try {
+      renderDssState(await dssPost('/api/dss/login/otp', { code }));
+    } catch (e) {
+      dssStatus.textContent = '送出失敗：' + e.message;
+    } finally {
+      dssOtpSubmitBtn.disabled = false;
+    }
+  });
+
+  dssOtpInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') dssOtpSubmitBtn.click();
+  });
+
+  dssForce.addEventListener('change', async () => {
+    const force = dssForce.checked;
+    try {
+      const data = await dssPost('/api/dss/force', { force });
+      if (!data.ok) {
+        dssForce.checked = !force;
+        dssStatus.textContent = data.error || '設定失敗';
+        return;
+      }
+      renderDssState(Object.assign({}, dssState, { force }));
+      if (force && dssState.state !== 'logged_in') {
+        dssCard.querySelector('details').open = true;   // 提醒使用者登入
+      }
+    } catch (e) {
+      dssForce.checked = !force;
+      dssStatus.textContent = '設定失敗：' + e.message;
+    }
+  });
+
   function appendLog(text) {
     const cls = text.includes('✓') ? 'ok'
               : text.includes('✗') ? 'err'
@@ -200,7 +400,7 @@
   function estimateProgress(messages) {
     const all = messages.join(' ');
     if (all.includes('儲存 Excel'))   return 95;
-    if (all.includes('個人 6-9'))     return 78;
+    if (all.includes('個人 8-11'))    return 78;
     if (all.includes('填入 1-5'))     return 60;
     if (all.includes('員工清單'))     return 45;
     if (all.includes('取得 本期'))    return 30;
@@ -253,6 +453,17 @@
       if (!confirm(`年對年截止日（${yoyEnd}）早於週結束日（${wkEnd}），確定要這樣產生嗎？`)) return;
     }
 
+    // 強制 DSS 模式：未登入直接擋下，避免 Sheet 6/7 必然失敗
+    try {
+      const dss = await (await fetch('/api/dss/status')).json();
+      renderDssState(dss);
+      if (dss.force && dss.state !== 'logged_in') {
+        dssCard.querySelector('details').open = true;
+        alert('已勾選「強制使用 DSS」但 DSS 尚未登入。\n請先在「搭售統計設定」完成登入，或取消強制使用 DSS。');
+        return;
+      }
+    } catch (e) { /* 狀態查詢失敗不擋產生 */ }
+
     logBox.innerHTML = '';
     seenCount = 0;
     progressBar.style.width = '0%';
@@ -304,4 +515,5 @@
   loadStores();
   loadDefaultDate();
   loadShoppertrakStatus();
+  loadDssStatus();
 })();

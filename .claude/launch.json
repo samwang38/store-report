@@ -5,7 +5,8 @@
       "name": "store-report",
       "runtimeExecutable": "python3",
       "runtimeArgs": ["server.py"],
-      "port": 8783
+      "port": 8783,
+      "autoPort": true
     }
   ]
 }
