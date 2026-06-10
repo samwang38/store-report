@@ -18,8 +18,9 @@ public class EPBReportQuery {
         String sql = args[0];
         int maxRows = args.length > 1 ? Integer.parseInt(args[1]) : 100000;
 
+        String wsdl = System.getProperty("epb.wsdl", "http://192.168.1.177:8080/EPB_AP_EPB/EPB_AP?wsdl");
         EPBAPService service = new EPBAPService(
-                new URL("http://192.168.1.177:8080/EPB_AP_EPB/EPB_AP?wsdl"),
+                new URL(wsdl),
                 new QName("http://ap.epb.com/", "EPB_APService"));
         EPBAP port = service.getEPBAPPort();
 

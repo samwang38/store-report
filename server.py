@@ -19,6 +19,7 @@ import time
 import traceback
 import urllib.parse
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
@@ -41,9 +42,33 @@ DATA_DIR = ROOT / "銷售資料"
 ENGINE_PATH = ROOT / "fill_weekly_excel.py"
 SACARE_PATH = DATA_DIR / "SAcare對應價目表.xlsx"
 
-JAVA = "/Library/Java/JavaVirtualMachines/jdk1.8.0_251.jdk/Contents/Home/jre/bin/java"
-JAVAC = "/Library/Java/JavaVirtualMachines/jdk1.8.0_251.jdk/Contents/Home/bin/javac"
+# Java 路徑：環境變數 EPB_JAVA_HOME 優先（指到 JDK Home），否則沿用預設 JDK 1.8 安裝路徑
+_DEFAULT_JDK = "/Library/Java/JavaVirtualMachines/jdk1.8.0_251.jdk/Contents/Home"
+_JAVA_HOME = os.environ.get("EPB_JAVA_HOME", _DEFAULT_JDK)
+JAVA = (
+    f"{_JAVA_HOME}/jre/bin/java"
+    if Path(f"{_JAVA_HOME}/jre/bin/java").exists()
+    else f"{_JAVA_HOME}/bin/java"
+)
+JAVAC = f"{_JAVA_HOME}/bin/javac"
 JAVA_CP = f"{ROOT}:/Library/EPBrowser/EPB/Shell/lib/*:/Library/EPBrowser/EPB/Shell/shell.jar"
+
+LOCAL_CONFIG_PATH = ROOT / "local_config.json"
+
+
+def _local_config():
+    try:
+        return json.loads(LOCAL_CONFIG_PATH.read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+# EPB WSDL 端點：環境變數 EPB_WSDL_URL → local_config.json 的 epb.wsdlUrl → 預設內網位址
+EPB_WSDL_URL = (
+    os.environ.get("EPB_WSDL_URL")
+    or _local_config().get("epb", {}).get("wsdlUrl")
+    or "http://192.168.1.177:8080/EPB_AP_EPB/EPB_AP?wsdl"
+)
 
 ORG_ID = "01"
 DEFAULT_SHOP_ID = "004"
@@ -253,17 +278,19 @@ def compile_java(source_name):
         raise RuntimeError(proc.stderr.strip() or proc.stdout.strip())
 
 
-def run_remote(sql, timeout=180):
+def run_remote(sql, timeout=180, max_rows=100000):
     compile_java("EPBReportQuery.java")
     proc = subprocess.run(
         [
             JAVA,
             "-Dsun.net.client.defaultConnectTimeout=5000",
             "-Dsun.net.client.defaultReadTimeout=120000",
+            f"-Depb.wsdl={EPB_WSDL_URL}",
             "-cp",
             JAVA_CP,
             "EPBReportQuery",
             sql,
+            str(max_rows),
         ],
         cwd=str(ROOT),
         text=True,
@@ -346,10 +373,17 @@ def standardize_remote_records(records):
     return df
 
 
-def remote_sales_df(shop_id, start_date, end_date):
-    if end_date < start_date:
+def remote_sales_df(shop_id, ranges):
+    """ranges: [(start_date, end_date), ...]。多組區間以 OR 合併成單一 SQL，
+    只啟動一次 JVM / 一次 SOAP 來回，由呼叫端再依日期切分。"""
+    ranges = [(s, e) for s, e in ranges if e >= s]
+    if not ranges:
         return empty_standard_df()
-    end_exclusive = end_date + timedelta(days=1)
+    date_conds = " or ".join(
+        f"(l.doc_date >= to_date({quote_sql(s.isoformat())}, 'yyyy-mm-dd')"
+        f" and l.doc_date < to_date({quote_sql((e + timedelta(days=1)).isoformat())}, 'yyyy-mm-dd'))"
+        for s, e in ranges
+    )
     sql = f"""
 select
   l.trans_type,
@@ -377,11 +411,10 @@ from poslinev_bi l
 left join ep_user e on e.user_id = l.emp_id1
 where l.org_id = {quote_sql(ORG_ID)}
   and l.shop_id = {quote_sql(shop_id)}
-  and l.doc_date >= to_date({quote_sql(start_date.isoformat())}, 'yyyy-mm-dd')
-  and l.doc_date < to_date({quote_sql(end_exclusive.isoformat())}, 'yyyy-mm-dd')
+  and ({date_conds})
 order by l.doc_date, l.doc_id, l.line_no
 """
-    headers, rows = run_remote(sql)
+    headers, rows = run_remote(sql, max_rows=500000)
     records = []
     for row in rows:
         row = (row + [""] * len(headers))[: len(headers)]
@@ -389,8 +422,20 @@ order by l.doc_date, l.doc_id, l.line_no
     return standardize_remote_records(records)
 
 
+_SACARE_CACHE = {"mtime": None, "prices": None}
+
+
+def load_sacare_cached():
+    """SAcare 價目表以檔案 mtime 快取，檔案沒變就不重讀 Excel。"""
+    mtime = SACARE_PATH.stat().st_mtime
+    if _SACARE_CACHE["mtime"] != mtime:
+        _SACARE_CACHE["prices"] = engine.load_sacare(SACARE_PATH)
+        _SACARE_CACHE["mtime"] = mtime
+    return _SACARE_CACHE["prices"]
+
+
 def load_epb_data(shop_id, dates, quarter_start):
-    sacare_prices = engine.load_sacare(SACARE_PATH)
+    sacare_prices = load_sacare_cached()
     # 納入 Sheet 10/11 年對年區間（截止日可由前端自訂，可能晚於週結束日）
     yoy_cur_s, yoy_cur_e, yoy_prv_s, yoy_prv_e = engine._yoy_periods(dates)
     # df_cur 涵蓋上週/本週/本月/上月，df_prev 涵蓋去年同期；納入自訂覆寫區間邊界以確保資料齊全
@@ -399,8 +444,11 @@ def load_epb_data(shop_id, dates, quarter_start):
     cur_end = max(dates["mo_end"], dates["wk_end"], dates["prev_wk_end"], dates["lm_end"], yoy_cur_e)
     prv_start = min(dates["ytd_prv_start"], dates["ly_start"], yoy_prv_s)
     prv_end = max(dates["ly_end"], yoy_prv_e)
-    df_cur = remote_sales_df(shop_id, cur_start, cur_end)
-    df_prev = remote_sales_df(shop_id, prv_start, prv_end)
+    # 兩個年度區間合併成單一查詢（單次 JVM/SOAP），回來後依日期切分
+    df_all = remote_sales_df(shop_id, [(cur_start, cur_end), (prv_start, prv_end)])
+    dts = pd.to_datetime(df_all["單據日期"], errors="coerce")
+    df_cur = df_all[(dts >= pd.Timestamp(cur_start)) & (dts < pd.Timestamp(cur_end + timedelta(days=1)))].reset_index(drop=True)
+    df_prev = df_all[(dts >= pd.Timestamp(prv_start)) & (dts < pd.Timestamp(prv_end + timedelta(days=1)))].reset_index(drop=True)
     return df_cur, df_prev, sacare_prices, {
         "shopId": shop_id,
         "currentRange": f"{cur_start.isoformat()}~{cur_end.isoformat()}",
@@ -444,11 +492,21 @@ def load_traffic(shop_id, dates, log=lambda m: None):
     periods10 = {"cur": (yoy_cur_s, yoy_cur_e), "prv": (yoy_prv_s, yoy_prv_e)}
 
     try:
-        t2, t10 = {}, {}
-        for name, (s, e) in periods2.items():
-            t2[name] = traffic_mod.get_traffic_total(shop_id, s, e, log=log)
-        for name, (s, e) in periods10.items():
-            t10[name] = traffic_mod.get_traffic_total(shop_id, s, e, log=log)
+        tasks = [("t2", name, s, e) for name, (s, e) in periods2.items()]
+        tasks += [("t10", name, s, e) for name, (s, e) in periods10.items()]
+        results = {}
+        # 第一個區間先單獨查（觸發登入、建立 token 快取），其餘並行查詢
+        first = tasks[0]
+        results[first[:2]] = traffic_mod.get_traffic_total(shop_id, first[2], first[3], log=log)
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = {
+                pool.submit(traffic_mod.get_traffic_total, shop_id, s, e, log=log): (which, name)
+                for which, name, s, e in tasks[1:]
+            }
+            for fut, key in futures.items():
+                results[key] = fut.result()
+        t2 = {name: results[("t2", name)] for name in periods2}
+        t10 = {name: results[("t10", name)] for name in periods10}
         log(f"  來客數：本週 {t2.get('本週'):,} / 本月 {t2.get('本月'):,}")
         return t2, t10
     except Exception as exc:
@@ -891,8 +949,12 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(400, {"error": f"參數錯誤: {e}"})
                 return
             job_id = str(uuid.uuid4())
+            now = time.time()
             with _LOCK:
-                JOBS[job_id] = {"status": "pending", "messages": [], "result": None}
+                # 順手清掉超過 24 小時的舊工作，避免長期運行記憶體無限增長
+                for old_id in [k for k, v in JOBS.items() if now - v.get("created", now) > 86400]:
+                    del JOBS[old_id]
+                JOBS[job_id] = {"status": "pending", "messages": [], "result": None, "created": now}
             threading.Thread(
                 target=_run_job, args=(job_id, payload), daemon=True
             ).start()
@@ -923,6 +985,13 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
+    for label, path in (("java", JAVA), ("javac", JAVAC)):
+        if not Path(path).exists():
+            sys.exit(
+                f"找不到 {label}：{path}\n"
+                "請安裝 JDK 1.8，或設定環境變數 EPB_JAVA_HOME 指到 JDK Home 目錄，例如：\n"
+                "  export EPB_JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_251.jdk/Contents/Home"
+            )
     compile_java("EPBReportQuery.java")
     port = int(os.environ.get("PORT", "8783"))
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
