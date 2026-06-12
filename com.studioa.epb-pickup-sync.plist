@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd 排程：每 60 秒呼叫 epb_pickup_sync.py（腳本自我節流為每小時，或收到網頁手動旗標時立即同步）。
+
+  安裝：
+    1) 確認下列兩處路徑：python3 路徑（`which python3`）與本專案絕對路徑。
+    2) 複製到 ~/Library/LaunchAgents/ 後載入：
+         cp com.studioa.epb-pickup-sync.plist ~/Library/LaunchAgents/
+         launchctl load ~/Library/LaunchAgents/com.studioa.epb-pickup-sync.plist
+    3) 停用：launchctl unload ~/Library/LaunchAgents/com.studioa.epb-pickup-sync.plist
+    4) 看 log：tail -f /tmp/epb-pickup-sync.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.studioa.epb-pickup-sync</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- 用跟你互動式 shell 同一個 python3（裝了 pandas）。
+         若 `which python3` 顯示別的路徑，改這一行。 -->
+    <string>/Library/Frameworks/Python.framework/Versions/3.14/bin/python3</string>
+    <string>epb_pickup_sync.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/sa/Claude/週報製作/報表製作_士林/live-store-report-app</string>
+
+  <key>StartInterval</key>
+  <integer>60</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/epb-pickup-sync.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/epb-pickup-sync.log</string>
+</dict>
+</plist>
