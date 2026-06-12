@@ -354,6 +354,7 @@ select {
 .log-box .ok   { color: #5ce08f; }
 .log-box .err  { color: #ff6b63; }
 .log-box .info { color: #6cb6ff; }
+.download-log { margin-top: 14px; }
 
 #downloadInfo { font-size: 14px; color: var(--text-2); margin-bottom: 4px; }
 

@@ -46,6 +46,8 @@
   const logBox        = $('logBox');
   const downloadBtn   = $('downloadBtn');
   const downloadInfo  = $('downloadInfo');
+  const showLogBtn    = $('showLogBtn');
+  const downloadLogBox = $('downloadLogBox');
   const resetBtn      = $('resetBtn');
   const retryBtn      = $('retryBtn');
   const errorMsg      = $('errorMsg');
@@ -53,6 +55,7 @@
   let pollTimer    = null;
   let currentJobId = null;
   let seenCount    = 0;
+  let latestLogMessages = [];
 
   function fmtDate(d) {
     return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
@@ -214,7 +217,7 @@
   const DSS_STATE_TEXT = {
     idle: '未登入',
     need_captcha: '請輸入圖形驗證碼',
-    need_otp: '需要 Email 驗證碼（請收信）',
+    need_otp: '已要求 DSS 寄送 Email 驗證碼，請收信後輸入',
     logged_in: '✓ 已登入 DSS',
     error: '',
   };
@@ -259,6 +262,9 @@
       dssOtpInput.focus();
     }
     let text = DSS_STATE_TEXT[data.state] ?? '';
+    if (data.state === 'need_otp' && data.otpSent === false) {
+      text = '需要 Email 驗證碼，但未確認寄送成功；請重新登入 DSS 或通知管理員檢查網站流程。';
+    }
     if (data.error) text = (text ? text + '　' : '') + data.error;
     if (data.state === 'idle' && !data.hasCredentials) text = '未儲存帳密';
     if (data.force && data.state !== 'logged_in') {
@@ -393,6 +399,27 @@
     logBox.scrollTop = logBox.scrollHeight;
   }
 
+  function renderDownloadLog() {
+    downloadLogBox.innerHTML = '';
+    latestLogMessages.forEach(msg => {
+      const cls = msg.includes('✓') ? 'ok'
+                : msg.includes('✗') ? 'err'
+                : 'info';
+      const line = document.createElement('span');
+      line.className = cls;
+      line.textContent = msg + '\n';
+      downloadLogBox.appendChild(line);
+    });
+    downloadLogBox.scrollTop = downloadLogBox.scrollHeight;
+  }
+
+  showLogBtn.addEventListener('click', () => {
+    const nextHidden = !downloadLogBox.hidden;
+    downloadLogBox.hidden = nextHidden;
+    showLogBtn.textContent = nextHidden ? '顯示 log' : '隱藏 log';
+    if (!nextHidden) renderDownloadLog();
+  });
+
   function stopPoll() {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
@@ -415,6 +442,7 @@
       const data = await res.json();
 
       const msgs = data.messages || [];
+      latestLogMessages = msgs.slice();
       for (let i = seenCount; i < msgs.length; i++) appendLog(msgs[i]);
       seenCount = msgs.length;
 
@@ -429,6 +457,9 @@
         downloadBtn.onclick = () => {
           window.location.href = `/api/download?jobId=${currentJobId}`;
         };
+        downloadLogBox.hidden = true;
+        showLogBtn.textContent = '顯示 log';
+        renderDownloadLog();
         show(downloadCard);
       } else if (data.status === 'error') {
         stopPoll();
@@ -465,6 +496,10 @@
     } catch (e) { /* 狀態查詢失敗不擋產生 */ }
 
     logBox.innerHTML = '';
+    downloadLogBox.innerHTML = '';
+    downloadLogBox.hidden = true;
+    showLogBtn.textContent = '顯示 log';
+    latestLogMessages = [];
     seenCount = 0;
     progressBar.style.width = '0%';
     progressLabel.textContent = '準備中…';

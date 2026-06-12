@@ -106,6 +106,16 @@ REPORT_SHEETS = [
     "13.3PP YOY",
 ]
 
+
+def validate_template_sheet_order(wb):
+    actual = [name for name in wb.sheetnames if name != "設定"]
+    expected = REPORT_SHEETS
+    if actual[:len(expected)] != expected:
+        raise RuntimeError(
+            "週報模板 sheet 順序不符："
+            f"預期 {' > '.join(expected)}；實際 {' > '.join(actual)}"
+        )
+
 TRANS_TYPE_MAP = {
     "A": "銷售",
     "E": "銷退",
@@ -690,6 +700,23 @@ def fill_bundle_sheets(wb, bundle, employees, log=lambda m: None):
     _fill_bundle_sheet(wb[BUNDLE_SHEET_MONTH], bundle["month"], employees)
 
 
+def clear_bundle_sheets(wb):
+    """搭售統計抓不到時，避免輸出保留模板中的舊樣本數字。"""
+    for sheet_name in (BUNDLE_SHEET_WEEK, BUNDLE_SHEET_MONTH):
+        ws = wb[sheet_name]
+        total_row = next(
+            (r for r in range(2, ws.max_row + 1)
+             if str(ws.cell(row=r, column=1).value).strip() == "Total"),
+            None,
+        )
+        for row in range(2, ws.max_row + 1):
+            for col in range(1, ws.max_column + 1):
+                if row == total_row and col == 1:
+                    ws.cell(row=row, column=col).value = "Total"
+                else:
+                    ws.cell(row=row, column=col).value = None
+
+
 # ─── EPB 並行計算搭售統計（反推 DSS 規則，2026-06 當週 231 列明細逐列驗證一致）──
 # 規則（與 DSS「3PP搭售率報表」完全重現）：
 #   主機：C3=3001 且 C4∈{4001,4002}=CPU / 4004=iPhone / {4005,4006,4041}=iPad / 4038=Watch；
@@ -1037,6 +1064,7 @@ def build_report_workbook(payload, log=lambda m: None):
     if yoy_end != wk_end:
         log(f"年對年截止日（自訂）：{yoy_end}（對比 {yoy_end.year-1} 年同期）")
     wb = openpyxl.load_workbook(TEMPLATE_PATH)
+    validate_template_sheet_order(wb)
     template_employees = engine.load_employees(wb) or engine.EMPLOYEES
     template_employee_count = len(template_employees)
     fiscal_start = engine.load_fiscal_year_start(wb)
@@ -1086,6 +1114,9 @@ def build_report_workbook(payload, log=lambda m: None):
     if bundle:
         log("填入 6-7 搭售統計…")
         fill_bundle_sheets(wb, bundle, employees, log=log)
+    else:
+        log("未填入搭售統計，清空 6-7 模板預設值…")
+        clear_bundle_sheets(wb)
 
     source_meta["employeeCount"] = len(employees)
     source_meta["employees"] = [{"code": code, "name": name} for code, name in employees]

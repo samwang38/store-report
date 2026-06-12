@@ -15,6 +15,7 @@ import html
 import re
 import threading
 import time
+from urllib.parse import urljoin
 
 import shoppertrak_traffic as _cfgmod
 
@@ -75,6 +76,7 @@ _state = {
     "csrf": None,
     "captcha_png": None,    # bytes
     "otp_form": None,       # {"action","method","fields","code_field"}
+    "otp_sent": False,
     "report_csrf": None,    # /report 頁的 CSRF token（查詢資料用）
 }
 
@@ -99,40 +101,107 @@ def _looks_like_login_page(html_text):
     return 'name="inputCaptcha"' in html_text or 'id="loginForm"' in html_text
 
 
-def _parse_otp_form(html_text):
-    """偵測「輸入 Email 驗證碼」頁：找含 code/otp/cap/verify 輸入欄的 form。
+def _form_action(attrs, default=""):
+    m = re.search(r'action\s*=\s*["\']([^"\']*)["\']', attrs, re.I)
+    return html.unescape(m.group(1)) if m else default
 
-    DSS 的 OTP 頁面結構未知（不定時觸發），採通用 form 解析：
-    回傳 {"action", "fields"(hidden 預填), "code_field"} 或 None。
+
+def _form_method(attrs):
+    m = re.search(r'method\s*=\s*["\']([^"\']*)["\']', attrs, re.I)
+    return (m.group(1) if m else "post").lower()
+
+
+def _input_attrs(tag):
+    attrs = {}
+    for k, _, v1, v2, v3 in re.findall(
+        r'([:\w-]+)(\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+)))?', tag, re.I
+    ):
+        attrs[k.lower()] = html.unescape(v1 or v2 or v3 or "")
+    return attrs
+
+
+def _button_fields(body, send_like=False):
+    """Return a likely clicked submit button name/value for simple HTML forms."""
+    candidates = []
+    for tag_m in re.finditer(r"<input\b[^>]*>", body, re.I):
+        candidates.append((tag_m.group(0), ""))
+    for tag_m in re.finditer(r"<button\b([^>]*)>(.*?)</button>", body, re.S | re.I):
+        candidates.append((tag_m.group(0), tag_m.group(2) or ""))
+    for tag, visible in candidates:
+        attrs = _input_attrs(tag)
+        typ = (attrs.get("type") or "submit").lower()
+        if typ not in ("submit", "button"):
+            continue
+        visible = re.sub(r"<[^>]+>", "", visible)
+        text = " ".join((attrs.get("value", "") + " " + visible + " " + tag).split())
+        if send_like and not re.search(r"send|mail|email|otp|code|verify|寄|發|送|信|驗證", text, re.I):
+            continue
+        name = attrs.get("name")
+        return {name: attrs.get("value", "")} if name else {}
+    return {}
+
+
+def _parse_otp_forms(html_text):
+    """偵測 Email 驗證流程。
+
+    有些 DSS 帳號 captcha 後會先出現「寄送 Email 驗證碼」按鈕，
+    送出後才出現輸入 OTP 的欄位；舊版只找 OTP 輸入欄，因此不會觸發寄信。
     """
+    verify_form, send_form = None, None
     for form_m in re.finditer(r"<form\b([^>]*)>(.*?)</form>", html_text, re.S | re.I):
         attrs, body = form_m.group(1), form_m.group(2)
         if "type=\"password\"" in body or "type='password'" in body:
             continue  # 還是登入頁，不是 OTP 頁
-        action_m = re.search(r'action="([^"]*)"', attrs)
         inputs = re.findall(r"<input\b[^>]*>", body, re.I)
         fields, code_field = {}, None
         for tag in inputs:
-            name_m = re.search(r'name="([^"]+)"', tag)
-            if not name_m:
+            tag_attrs = _input_attrs(tag)
+            name = tag_attrs.get("name")
+            if not name:
                 continue
-            name = name_m.group(1)
-            val_m = re.search(r'value="([^"]*)"', tag)
-            typ_m = re.search(r'type="([^"]+)"', tag)
-            typ = (typ_m.group(1) if typ_m else "text").lower()
-            if typ in ("hidden",):
-                fields[name] = html.unescape(val_m.group(1)) if val_m else ""
+            typ = (tag_attrs.get("type") or "text").lower()
+            if typ in ("hidden", "submit"):
+                fields[name] = tag_attrs.get("value", "")
             elif typ in ("text", "number", "tel") and re.search(
                 r"otp|cap|code|verify|驗證", name + tag, re.I
             ):
                 code_field = name
-        if code_field:
-            return {
-                "action": action_m.group(1) if action_m else "",
+        form = {
+            "action": _form_action(attrs),
+            "method": _form_method(attrs),
+            "fields": fields,
+        }
+        if code_field and verify_form is None:
+            verify_form = {
+                **form,
                 "fields": fields,
                 "code_field": code_field,
             }
-    return None
+            continue
+        text = " ".join(re.sub(r"<[^>]+>", " ", body).split())
+        if send_form is None and re.search(r"email|mail|otp|驗證碼|寄送|發送|信箱|郵件", text + " " + body, re.I):
+            send_form = {
+                **form,
+                "fields": {**fields, **_button_fields(body, send_like=True)},
+            }
+    return verify_form, send_form
+
+
+def _parse_otp_form(html_text):
+    verify_form, _ = _parse_otp_forms(html_text)
+    return verify_form
+
+
+def _submit_parsed_form(session, form, extra=None):
+    data = dict(form.get("fields") or {})
+    if extra:
+        data.update(extra)
+    action = form.get("action") or LOGIN_PATH
+    url = action if action.startswith("http") else urljoin(BASE_URL + "/", action)
+    method = (form.get("method") or "post").lower()
+    if method == "get":
+        return session.get(url, params=data, allow_redirects=False, timeout=30)
+    return session.post(url, data=data, allow_redirects=False, timeout=30)
 
 
 def _set_error(msg):
@@ -149,6 +218,7 @@ def status():
             "username": u or "",
             "state": _state["state"],
             "error": _state["error"],
+            "otpSent": _state.get("otp_sent", False),
         }
 
 
@@ -179,7 +249,7 @@ def start_login():
         png = _fetch_captcha(session)
         with _LOCK:
             _state.update(state="need_captcha", error="", session=session,
-                          csrf=csrf, captcha_png=png, otp_form=None)
+                          csrf=csrf, captcha_png=png, otp_form=None, otp_sent=False)
     except Exception as exc:
         with _LOCK:
             _set_error(f"無法連線 DSS：{exc}")
@@ -202,7 +272,7 @@ def refresh_captcha():
     return status()
 
 
-def _after_auth_response(session, res):
+def _after_auth_response(session, res, allow_otp_send=True):
     """登入/OTP 送出後的共同判讀：成功 / 仍在登入頁 / OTP 頁。"""
     # 跟隨 redirect 取最終頁
     page = res
@@ -222,18 +292,38 @@ def _after_auth_response(session, res):
             _state["error"] = "登入失敗：請確認帳密與驗證碼後重試"
         return
 
-    otp = _parse_otp_form(text)
+    otp, otp_send = _parse_otp_forms(text)
+    if otp_send and allow_otp_send:
+        try:
+            sent_res = _submit_parsed_form(session, otp_send)
+            ctype = sent_res.headers.get("Content-Type", "")
+            if "json" in ctype or not (sent_res.text or "").strip():
+                with _LOCK:
+                    if otp:
+                        _state.update(state="need_otp", error="", session=session,
+                                      otp_form=otp, otp_sent=True)
+                    else:
+                        _set_error("Email 驗證碼可能已送出，但無法解析輸入驗證碼的表單")
+                return
+            return _after_auth_response(session, sent_res, allow_otp_send=False)
+        except Exception as exc:
+            with _LOCK:
+                _state.update(state="need_otp", error=f"Email 驗證碼寄送失敗：{exc}",
+                              session=session, otp_form=otp, otp_sent=False)
+            return
+
     if otp:
         csrf = _parse_csrf(text)
         if csrf:
             otp["fields"].setdefault("_csrf", csrf)
         with _LOCK:
-            _state.update(state="need_otp", error="", session=session, otp_form=otp)
+            _state.update(state="need_otp", error="", session=session,
+                          otp_form=otp, otp_sent=True)
         return
 
     with _LOCK:
         _state.update(state="logged_in", error="", session=session,
-                      captcha_png=None, otp_form=None, report_csrf=None)
+                      captcha_png=None, otp_form=None, otp_sent=False, report_csrf=None)
     _save_cookies(session)
 
 
@@ -263,11 +353,7 @@ def submit_otp(code):
         if _state["state"] != "need_otp" or session is None or not otp:
             return status()
     try:
-        data = dict(otp["fields"])
-        data[otp["code_field"]] = (code or "").strip()
-        action = otp["action"] or LOGIN_PATH
-        url = action if action.startswith("http") else BASE_URL + action
-        res = session.post(url, data=data, allow_redirects=False, timeout=30)
+        res = _submit_parsed_form(session, otp, {otp["code_field"]: (code or "").strip()})
         _after_auth_response(session, res)
     except Exception as exc:
         with _LOCK:
@@ -400,10 +486,12 @@ def fetch_bundle_stats(shop_id, start_date, end_date, log=lambda m: None):
     csrf = _report_csrf(session)
     shop = str(shop_id).strip()
     rows, page = [], 1
+    total_pages_seen = 1
     while True:
         data = _rpt_search(session, csrf, start_date, end_date, page)
         rows.extend(data.get("data") or [])
-        total_pages = int(data.get("totalPages") or 1)
+        total_pages = int(data.get("totalPages") or data.get("total") or 1)
+        total_pages_seen = max(total_pages_seen, total_pages)
         if page >= total_pages:
             break
         page += 1
@@ -420,4 +508,6 @@ def fetch_bundle_stats(shop_id, start_date, end_date, log=lambda m: None):
                 "ms": int(float(r.get(f"{k}_ms") or 0)),
             }
         out.append(item)
+    if not out:
+        log(f"    DSS {shop} {start_date}~{end_date}：查 {total_pages_seen} 頁、{len(rows)} 筆，無符合門市資料")
     return out

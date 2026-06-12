@@ -160,7 +160,7 @@
             </div>
           </div>
           <div class="actions">
-            <button class="primary-btn" id="dssOtpSubmitBtn" type="button">送出驗證碼</button>
+            <button class="primary-btn" id="dssOtpSubmitBtn" type="button">提交收到的驗證碼</button>
           </div>
         </div>
         <div class="group">
@@ -187,8 +187,10 @@
         <p id="downloadInfo"></p>
         <div class="actions">
           <button class="primary-btn" id="downloadBtn" type="button">下載 Excel</button>
+          <button class="ghost-btn" id="showLogBtn" type="button">顯示 log</button>
           <button class="ghost-btn" id="resetBtn" type="button">重新產生</button>
         </div>
+        <div class="log-box download-log" id="downloadLogBox" hidden></div>
       </section>
 
       <section class="card" id="errorCard" hidden>
