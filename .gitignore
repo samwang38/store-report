@@ -5,3 +5,4 @@ __pycache__/
 tmp/
 output/
 local_config.json
+.epb_last_sync
