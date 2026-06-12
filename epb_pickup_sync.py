@@ -12,12 +12,17 @@ EPB → 預約工作台 銷售比對 同步腳本（Pattern B：店內 Mac 主�
   - 或 Worker 端有「立即同步」旗標（網頁按鈕設的）→ 同步
   否則直接結束，不打 EPB。
 
+多店：EPB 是中央 ERP，一台中央機器即可一次撈全部店、依「門市名稱」分別推送快照
+      （門市名稱 = 兩系統的對應橋樑；前端用預約的 shopName 比對同店銷售）。
+
 設定（擇一）：
-  - 環境變數 EPB_WORKER_URL、EPB_INGEST_SECRET、EPB_SHOP_ID(預設004)、EPB_WINDOW_DAYS(預設90)
+  - 環境變數 EPB_WORKER_URL、EPB_INGEST_SECRET、EPB_SHOPS(逗號分隔 EPB shop_id)、EPB_WINDOW_DAYS(預設90)
   - 或 local_config.json 內：
       "epb": { "workerUrl": "https://studioa-reservation.<帳號>.workers.dev",
                "ingestSecret": "<和 Worker 一致的 secret>",
-               "shopId": "004", "windowDays": 90 }
+               "shops": ["004", "005", "010"],   // 多店；要全公司可留空/移除
+               "windowDays": 90 }
+    （相容舊設定：只設 "shopId":"004" 等同 "shops":["004"]）
 
 需在公司 VPN/內網下執行（EPB 連線前提）。
 """
@@ -51,8 +56,22 @@ def cfg(key, env, default=None):
 
 WORKER_URL = (cfg("workerUrl", "EPB_WORKER_URL") or "").rstrip("/")
 SECRET = cfg("ingestSecret", "EPB_INGEST_SECRET") or ""
-SHOP_ID = str(cfg("shopId", "EPB_SHOP_ID", "004"))
 WINDOW_DAYS = int(cfg("windowDays", "EPB_WINDOW_DAYS", 90))
+
+
+def _resolve_shops():
+    """要同步的 EPB shop_id 清單。
+    優先 epb.shops（list 或逗號字串）；否則退回舊的單店 epb.shopId；都沒有 → None（全公司）。"""
+    shops = cfg("shops", "EPB_SHOPS", None)
+    if isinstance(shops, str):
+        shops = [s.strip() for s in shops.split(",") if s.strip()]
+    if not shops:
+        single = cfg("shopId", "EPB_SHOP_ID", None)
+        shops = [str(single).strip()] if single else None
+    return [str(s).strip() for s in shops] if shops else None
+
+
+SHOPS = _resolve_shops()
 
 
 def _post(path, body, with_secret=False):
@@ -86,50 +105,74 @@ def due_by_schedule():
     return (time.time() - last) >= 3600
 
 
-def fetch_sold():
-    """查 EPB 近 N 天已成交，回 [{v,s,d}]（同會員同品取最近成交日；扣銷退後淨量 > 0 才算）。"""
+def shop_id_to_name():
+    """EPB pos_shop：shop_id → 門市名稱（與預約系統 shopName 對應的橋樑）。"""
+    headers, rows = server.run_remote("select shop_id, name from pos_shop where org_id = '01'")
+    idx = {h.upper(): i for i, h in enumerate(headers)}
+    return {str(r[idx["SHOP_ID"]]).strip(): (r[idx["NAME"]] or "").strip() for r in rows}
+
+
+def fetch_all_sold():
+    """查 EPB 近 N 天已成交，依 shop_id 分組回 {shop_id: [{v,s,d}]}。
+    同會員同品取最近成交日；扣銷退後淨量 > 0 才算。SHOPS=None 時撈全公司。"""
+    shop_filter = ""
+    if SHOPS:
+        ids = ",".join("'" + s.replace("'", "") + "'" for s in SHOPS)
+        shop_filter = f" and shop_id in ({ids})"
     sql = f"""
-        select vip_id, stk_id, trans_type, stk_qty,
+        select vip_id, stk_id, trans_type, stk_qty, shop_id,
                to_char(doc_date, 'YYYY-MM-DD') doc_date
         from poslinev_bi
         where org_id = '01'
-          and shop_id = '{SHOP_ID}'
           and doc_date >= trunc(sysdate) - {WINDOW_DAYS}
-          and trans_type in ('A', 'H', 'E')
+          and trans_type in ('A', 'H', 'E'){shop_filter}
     """
     headers, rows = server.run_remote(sql)
     idx = {h.upper(): i for i, h in enumerate(headers)}
-    iv, isk, it, iq, id_ = (idx["VIP_ID"], idx["STK_ID"], idx["TRANS_TYPE"],
-                            idx["STK_QTY"], idx["DOC_DATE"])
+    iv, isk, it, iq, ish, id_ = (idx["VIP_ID"], idx["STK_ID"], idx["TRANS_TYPE"],
+                                 idx["STK_QTY"], idx["SHOP_ID"], idx["DOC_DATE"])
 
-    net = {}          # (vip, stk) -> 淨數量（A/H 正、E 銷退本身為負）
-    last_day = {}     # (vip, stk) -> 最近成交日（只看 A/H）
+    per = {}  # shop_id -> {"net": {(v,s):qty}, "last": {(v,s):day}}
     for r in rows:
         vip = (r[iv] or "").strip()
         stk = (r[isk] or "").strip()
         if not vip or vip == "0" or not stk:
             continue
+        shop = str(r[ish]).strip()
         try:
             qty = float(r[iq] or 0)
         except ValueError:
             qty = 0.0
+        b = per.setdefault(shop, {"net": {}, "last": {}})
         key = (vip, stk)
-        net[key] = net.get(key, 0.0) + qty
+        b["net"][key] = b["net"].get(key, 0.0) + qty
         if r[it] in ("A", "H"):
             d = r[id_] or ""
-            if d and d > last_day.get(key, ""):
-                last_day[key] = d
+            if d and d > b["last"].get(key, ""):
+                b["last"][key] = d
 
-    return [{"v": v, "s": s, "d": last_day.get((v, s), "")}
-            for (v, s), q in net.items() if q > 0]
+    out = {shop: [{"v": v, "s": s, "d": b["last"].get((v, s), "")}
+                  for (v, s), q in b["net"].items() if q > 0]
+           for shop, b in per.items()}
+    # 設定清單裡的店即使無資料也回空（讓索引有同步時間）
+    if SHOPS:
+        for s in SHOPS:
+            out.setdefault(s, [])
+    return out
 
 
 def run_sync():
-    sold = fetch_sold()
-    snapshot = {"updatedAt": datetime.now(TPE).strftime("%Y-%m-%d %H:%M:%S"), "sold": sold}
-    _post("/epb/ingest", snapshot, with_secret=True)
+    names = shop_id_to_name()
+    by_shop = fetch_all_sold()
+    ts = datetime.now(TPE).strftime("%Y-%m-%d %H:%M:%S")
+    total = 0
+    for shop_id, sold in by_shop.items():
+        name = names.get(shop_id) or shop_id  # 以門市名稱當比對橋樑
+        _post("/epb/ingest", {"shop": name, "updatedAt": ts, "sold": sold}, with_secret=True)
+        total += len(sold)
+        print(f"  · {name}（{shop_id}）：{len(sold)} 筆")
     LAST_SYNC_FILE.write_text(str(time.time()))
-    print(f"[ok] 已同步 {len(sold)} 筆已成交（shop {SHOP_ID}, 近 {WINDOW_DAYS} 天）→ {snapshot['updatedAt']}")
+    print(f"[ok] 已同步 {len(by_shop)} 店、共 {total} 筆已成交（近 {WINDOW_DAYS} 天）→ {ts}")
 
 
 def main():
