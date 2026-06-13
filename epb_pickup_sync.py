@@ -106,10 +106,22 @@ def due_by_schedule():
 
 
 def shop_id_to_name():
-    """EPB pos_shop：shop_id → 門市名稱（與預約系統 shopName 對應的橋樑）。"""
-    headers, rows = server.run_remote("select shop_id, name from pos_shop where org_id = '01'")
-    idx = {h.upper(): i for i, h in enumerate(headers)}
-    return {str(r[idx["SHOP_ID"]]).strip(): (r[idx["NAME"]] or "").strip() for r in rows}
+    """EPB shop_id → 門市名稱（與預約系統 shopName 對應的橋樑）。
+    以 server.FALLBACK_STORES 硬編清單為底（可靠），pos_shop 查得到才覆蓋。
+    注意：pos_shop 經 EPB gateway 常回 0 列，不能單靠它——否則名稱對照為空，
+    run_sync 會退回拿「代碼」當店名推快照，導致前端（用預約 shopName 比對）永遠對不上。"""
+    names = dict(getattr(server, "FALLBACK_STORES", {}))
+    try:
+        headers, rows = server.run_remote("select shop_id, name from pos_shop where org_id = '01'")
+        idx = {h.upper(): i for i, h in enumerate(headers)}
+        for r in rows:
+            sid = str(r[idx["SHOP_ID"]]).strip()
+            nm = (r[idx["NAME"]] or "").strip()
+            if sid and nm:
+                names[sid] = nm  # EPB 有回傳才以其為準
+    except Exception as e:
+        print(f"[warn] pos_shop 取名失敗，改用後備清單：{e}", file=sys.stderr)
+    return names
 
 
 def fetch_all_sold():
