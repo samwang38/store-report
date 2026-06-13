@@ -81,6 +81,23 @@ _state = {
 }
 
 
+# 暫時除錯：把登入轉場頁存檔，方便確認 Email 驗證頁版型（確認無誤後可關閉）。
+_DEBUG_DUMP = True
+
+
+def _debug_dump(text):
+    if not _DEBUG_DUMP:
+        return
+    try:
+        import os
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "dss_login_debug.html")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text or "")
+    except Exception:
+        pass
+
+
 def _requests():
     import requests  # lazy：缺套件時不影響 server 啟動與帳密設定
     return requests
@@ -192,6 +209,38 @@ def _parse_otp_form(html_text):
     return verify_form
 
 
+def _input_value_by_id(html_text, el_id):
+    """抓 <input id="el_id"> 的 value（取 Email 驗證頁預填的信箱／手機）。"""
+    for tag_m in re.finditer(r"<input\b[^>]*>", html_text, re.I):
+        a = _input_attrs(tag_m.group(0))
+        if a.get("id") == el_id:
+            return a.get("value", "")
+    return ""
+
+
+def _looks_like_mail_verify_page(html_text):
+    """通過圖形驗證碼後的「Email 驗證碼」頁特徵（js/Dss.js 的 sendVarMail 流程）。"""
+    return bool(re.search(r"sendVarMail|sendCodeBtn|inputVarCode", html_text or "", re.I))
+
+
+def _send_var_mail(session, csrf, email, phone):
+    """重現前端 Dss.sendCodeBtn：POST /dss/sendVarMail（JSON＋X-CSRF-TOKEN）真正寄出 Email OTP。
+
+    回傳解析後的 JSON（成功時 returnCode=="000"）。
+    """
+    res = session.post(
+        BASE_URL + "/dss/sendVarMail",
+        json={"email": email or "", "phone": phone or ""},
+        headers={"X-CSRF-TOKEN": csrf} if csrf else {},
+        timeout=30,
+    )
+    res.raise_for_status()
+    try:
+        return res.json() or {}
+    except Exception:
+        return {}
+
+
 def _submit_parsed_form(session, form, extra=None):
     data = dict(form.get("fields") or {})
     if extra:
@@ -281,6 +330,39 @@ def _after_auth_response(session, res, allow_otp_send=True):
         url = loc if loc.startswith("http") else BASE_URL + loc
         page = session.get(url, timeout=30)
     text = page.text or ""
+    _debug_dump(text)
+
+    # 通過圖形驗證碼後，DSS 會進到「Email 驗證碼」頁。寄信不是表單送出，而是前端 JS
+    # （Dss.sendCodeBtn）打 AJAX：POST /dss/sendVarMail（JSON {email,phone}＋X-CSRF-TOKEN）。
+    # 此頁沿用登入版型、仍含 inputCaptcha，故須先判斷它，否則會被誤判成「登入失敗」。
+    if _looks_like_mail_verify_page(text):
+        csrf = _parse_csrf(text) or _state["csrf"]
+        email = _input_value_by_id(text, "email")
+        phone = _input_value_by_id(text, "phone")
+        verify = _parse_otp_form(text) or {
+            "action": LOGIN_PATH, "method": "post",
+            "fields": {"_csrf": csrf} if csrf else {},
+            "code_field": "inputVarCode",
+        }
+        verify["fields"].setdefault("_csrf", csrf)
+        if allow_otp_send:
+            try:
+                data = _send_var_mail(session, csrf, email, phone)
+            except Exception as exc:
+                with _LOCK:
+                    _state.update(state="need_otp", error=f"Email 驗證碼寄送失敗：{exc}",
+                                  session=session, otp_form=verify, otp_sent=False)
+                return
+            if str(data.get("returnCode", "000")) not in ("000", ""):
+                with _LOCK:
+                    _state.update(state="need_otp",
+                                  error=data.get("returnMsg") or "Email 驗證碼寄送失敗",
+                                  session=session, otp_form=verify, otp_sent=False)
+                return
+        with _LOCK:
+            _state.update(state="need_otp", error="", session=session,
+                          otp_form=verify, otp_sent=True)
+        return
 
     if _looks_like_login_page(text):
         # 回到登入頁＝失敗（驗證碼錯或帳密錯）。重抓 csrf+captcha 讓使用者重試。
@@ -292,26 +374,8 @@ def _after_auth_response(session, res, allow_otp_send=True):
             _state["error"] = "登入失敗：請確認帳密與驗證碼後重試"
         return
 
-    otp, otp_send = _parse_otp_forms(text)
-    if otp_send and allow_otp_send:
-        try:
-            sent_res = _submit_parsed_form(session, otp_send)
-            ctype = sent_res.headers.get("Content-Type", "")
-            if "json" in ctype or not (sent_res.text or "").strip():
-                with _LOCK:
-                    if otp:
-                        _state.update(state="need_otp", error="", session=session,
-                                      otp_form=otp, otp_sent=True)
-                    else:
-                        _set_error("Email 驗證碼可能已送出，但無法解析輸入驗證碼的表單")
-                return
-            return _after_auth_response(session, sent_res, allow_otp_send=False)
-        except Exception as exc:
-            with _LOCK:
-                _state.update(state="need_otp", error=f"Email 驗證碼寄送失敗：{exc}",
-                              session=session, otp_form=otp, otp_sent=False)
-            return
-
+    # 後備：少數帳號可能用一般表單 OTP（非 sendVarMail AJAX 流程）。
+    otp = _parse_otp_form(text)
     if otp:
         csrf = _parse_csrf(text)
         if csrf:

@@ -6,3 +6,4 @@ tmp/
 output/
 local_config.json
 .epb_last_sync
+dss_login_debug.html
