@@ -212,14 +212,24 @@ def fetch_models(stks):
 
 
 def sync_models():
-    """取待查存貨代碼 → 查型號 → 回填 Worker。"""
+    """取待查存貨代碼 → 查型號 → 回填 Worker。回 (解出數, 待查數)。"""
     stks = claim_pending_models()
-    if not stks:
-        return
-    found = fetch_models([str(s).strip() for s in stks if str(s).strip()])
+    norm = [str(s).strip() for s in stks if str(s).strip()]
+    if not norm:
+        return 0, 0
+    found = fetch_models(norm)
     if found:
         _post("/epb/models/ingest", {"models": found}, with_secret=True)
-    print(f"[ok] 型號回填 {len(found)}/{len(stks)} 筆")
+    print(f"[ok] 型號回填 {len(found)}/{len(norm)} 筆")
+    return len(found), len(norm)
+
+
+def post_sync_log(entry):
+    """回報一筆同步紀錄到 Worker（供系統狀態頁；無個資）；失敗忽略。"""
+    try:
+        _post("/epb/sync-log", entry, with_secret=True)
+    except Exception as e:
+        print(f"[warn] 回報 sync-log 失敗（忽略）：{e}", file=sys.stderr)
 
 
 def run_sync():
@@ -227,18 +237,27 @@ def run_sync():
     by_shop = fetch_all_sold()
     ts = datetime.now(TPE).strftime("%Y-%m-%d %H:%M:%S")
     total = 0
+    shops_summary = []
     for shop_id, sold in by_shop.items():
         name = names.get(shop_id) or shop_id  # 以門市名稱當比對橋樑
         _post("/epb/ingest", {"shop": name, "updatedAt": ts, "sold": sold}, with_secret=True)
         total += len(sold)
+        shops_summary.append({"name": name, "count": len(sold)})
         print(f"  · {name}（{shop_id}）：{len(sold)} 筆")
     LAST_SYNC_FILE.write_text(str(time.time()))
     print(f"[ok] 已同步 {len(by_shop)} 店、共 {total} 筆已成交（近 {WINDOW_DAYS} 天）→ {ts}")
+
     # 同一趟順便回填預約工作台需要的型號（只查前端排入的待查存貨代碼）
+    model_found, model_asked = 0, 0
     try:
-        sync_models()
+        model_found, model_asked = sync_models()
     except Exception as e:
         print(f"[warn] 型號同步失敗（忽略，不影響銷售同步）：{e}", file=sys.stderr)
+
+    post_sync_log({
+        "at": ts, "ok": True, "shops": shops_summary, "sold": total,
+        "models": {"found": model_found, "asked": model_asked},
+    })
 
 
 def main():
@@ -250,7 +269,12 @@ def main():
     if force or manual or due_by_schedule():
         why = "強制" if force else ("手動立即同步" if manual else "排程到期")
         print(f"[run] 觸發同步（{why}）")
-        run_sync()
+        try:
+            run_sync()
+        except Exception as e:
+            ts = datetime.now(TPE).strftime("%Y-%m-%d %H:%M:%S")
+            post_sync_log({"at": ts, "ok": False, "error": str(e)[:300]})
+            raise
     else:
         print("[skip] 未到同步時點、也無手動請求")
 
