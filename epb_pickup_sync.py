@@ -173,6 +173,55 @@ def fetch_all_sold():
     return out
 
 
+# ───────── 存貨代碼 → 型號 對照（供預約工作台「型號」欄） ─────────
+# 前端把快取沒有的存貨代碼排進 Worker 待查清單；本腳本在排程同步時取走、
+# 查 EPB 商品主檔 STKMAS 取型號（MODEL 欄，即 Apple 料號 如 MHRV4ZP/A）、回填 Worker KV。
+# 已查過的不會再排入（前端快取命中）。表名/欄位已實測確認，可用設定覆蓋備用。
+#   modelTable   EPB_MODEL_TABLE     商品主檔表名（預設 stkmas）
+#   modelNameCol EPB_MODEL_NAME_COL  型號欄位名（預設 model；想存全名可改 name）
+MODEL_TABLE = cfg("modelTable", "EPB_MODEL_TABLE", "stkmas")
+MODEL_NAME_COL = cfg("modelNameCol", "EPB_MODEL_NAME_COL", "model")
+
+
+def claim_pending_models():
+    """取走 Worker 端待查型號的存貨代碼清單（需 secret）。"""
+    try:
+        return _post("/epb/models/claim-pending", {}, with_secret=True).get("stks") or []
+    except Exception as e:
+        print(f"[warn] claim-pending(models) 失敗（忽略）：{e}", file=sys.stderr)
+        return []
+
+
+def fetch_models(stks):
+    """查 STKMAS 解出 stks 的型號 → {stk_id: 型號}。分批避開 Oracle IN 上限。"""
+    found = {}
+    for i in range(0, len(stks), 900):
+        chunk = stks[i:i + 900]
+        ids = ",".join("'" + s.replace("'", "") + "'" for s in chunk)
+        sql = (f"select stk_id, {MODEL_NAME_COL} as model from {MODEL_TABLE} "
+               f"where org_id = '01' and stk_id in ({ids})")
+        headers, rows = server.run_remote(sql)
+        idx = {h.upper(): j for j, h in enumerate(headers)}
+        si, mi = idx["STK_ID"], idx["MODEL"]
+        for r in rows:
+            sid = str(r[si]).strip()
+            mdl = (r[mi] or "").strip()
+            if sid and mdl:
+                found[sid] = mdl
+    return found
+
+
+def sync_models():
+    """取待查存貨代碼 → 查型號 → 回填 Worker。"""
+    stks = claim_pending_models()
+    if not stks:
+        return
+    found = fetch_models([str(s).strip() for s in stks if str(s).strip()])
+    if found:
+        _post("/epb/models/ingest", {"models": found}, with_secret=True)
+    print(f"[ok] 型號回填 {len(found)}/{len(stks)} 筆")
+
+
 def run_sync():
     names = shop_id_to_name()
     by_shop = fetch_all_sold()
@@ -185,6 +234,11 @@ def run_sync():
         print(f"  · {name}（{shop_id}）：{len(sold)} 筆")
     LAST_SYNC_FILE.write_text(str(time.time()))
     print(f"[ok] 已同步 {len(by_shop)} 店、共 {total} 筆已成交（近 {WINDOW_DAYS} 天）→ {ts}")
+    # 同一趟順便回填預約工作台需要的型號（只查前端排入的待查存貨代碼）
+    try:
+        sync_models()
+    except Exception as e:
+        print(f"[warn] 型號同步失敗（忽略，不影響銷售同步）：{e}", file=sys.stderr)
 
 
 def main():
