@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  launchd 排程：每 60 秒呼叫 epb_pickup_sync.py（腳本自我節流為每小時，或收到網頁手動旗標時立即同步）。
+  launchd 排程：每 300 秒（5 分鐘）呼叫 epb_pickup_sync.py（腳本自我節流為每小時，或收到網頁手動旗標時立即同步）。
+  間隔由 60s 拉長為 300s 以降低 Cloudflare KV 讀取量；代價是網頁「立即同步」最久等約 5 分鐘才執行。
 
   安裝：
     1) 確認下列兩處路徑：python3 路徑（`which python3`）與本專案絕對路徑。
@@ -27,7 +28,7 @@
   <string>/Users/sa/Claude/週報製作/報表製作_士林/live-store-report-app</string>
 
   <key>StartInterval</key>
-  <integer>60</integer>
+  <integer>300</integer>
 
   <key>RunAtLoad</key>
   <true/>

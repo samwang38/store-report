@@ -7,7 +7,7 @@ EPB → 預約工作台 銷售比對 同步腳本（Pattern B：店內 Mac 主�
   2) 整理成去識別化快照 {updatedAt, sold:[{v:會員碼, s:存貨碼, d:成交日}]}。
   3) POST 到 Cloudflare Worker 的 /epb/ingest（帶 secret）寫入 KV，供網頁讀取比對。
 
-自我節流（搭配 launchd 每 60 秒呼叫）：
+自我節流（搭配 launchd 每 300 秒/5 分鐘呼叫）：
   - 距上次同步 ≥ 1 小時 → 同步
   - 或 Worker 端有「立即同步」旗標（網頁按鈕設的）→ 同步
   否則直接結束，不打 EPB。
