@@ -27,10 +27,10 @@ PORT=8899 python3 server.py  # 自訂 port
 移植自同層 `live-report-app`，邏輯零改動；本工具去掉登入閘、改非同步任務佇列、
 加免登入門市下拉。Web 殼與前端流程仿 `北一區/北一區週報-app`。
 
-共用上層資源（不複製）：
-- 範本：`../週報模板.xlsx`
-- 引擎：`../fill_weekly_excel.py`
-- SAcare 價目表：`../銷售資料/SAcare對應價目表.xlsx`
+本機資源（本資料夾內）：
+- 範本：`週報模板.xlsx`
+- 引擎：`fill_weekly_excel.py`
+- SAcare 價目表：`銷售資料/SAcare對應價目表.xlsx`
 
 ## API
 

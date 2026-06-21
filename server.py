@@ -1028,8 +1028,133 @@ def finalize_known_formulas(wb):
         ws.cell(row=row, column=11).value = (h or 0) + (i or 0) + (ws.cell(row=row, column=10).value or 0)
 
 
-def fill_employee_report_sheets(wb, df_cur, sacare_prices, dates):
+# ─── 第 8 頁 B/C/D/H/I 直接取 ERP BI 原始值 ──────────────────────────────
+# 來源：EPB「已儲存 BI 查詢」(BIQUERY)。改用 ERP 報表原公式直接打底層 view，
+# 取代引擎以 poslinev_bi 明細近似重算（2026-06 與 Sam 逐欄核對「完全正確」）。
+#   B 總業績      ← S_週報_員工個人總業績      (SHOPPOSB / POSLINEV_BI)
+#   C 3PP金額     ← S_週報_員工個人3PP金額     (SHOPPOSB / POSLINEV_BI)
+#   D 原廠總業績  ← S_週報_員工個人原廠總業績  (SHOPPOSB / POSLINEV_BI)
+#   H Apple毛利   ← 13-門市獎金Apple毛利額未稅-員工 (BISHOP / BIPOS_VIEW)
+#   I 3PP毛利     ← 14-門市獎金3PP毛利額未稅-員工  (BISHOP / BIPOS_VIEW)
+# B/C/D = SUM(LINE_TOTAL_NET + LINE_TAX)（含稅）；H/I = 收入÷1.05 − 成本（未稅）。
+# 期間用第 8 頁原本的本月區間 mo_start~mo_end。E 欄(SA Care)與 F/G/J/K 公式不動。
+
+# D 原廠總業績排除碼
+_BI_D_STK_EXCL = ("'99200168','99500006','99900946','99900947','99900948','99900949',"
+                  "'99900950','99901684','99901685','99902607','99902608','99902609','99902610'")
+# 報表13 Apple 毛利排除碼
+_BI_H_STK_EXCL = ("'99903303','99903302','07307154','07309136','07309137','07310037','07310042',"
+                  "'07310053','07310093','07311242','88600895','88601027','90501795','90501799',"
+                  "'99200168','99500006','99900946','99900947','99900948','99900949','99900950',"
+                  "'99901684','99901685','99902607','99902608','99902609','99902610','99903343','99903339'")
+# 報表14 3PP 毛利排除碼
+_BI_I_STK_EXCL = ("'99903303','99903302','99200168','99500006','99900946','99900947','99900948',"
+                  "'99900949','99900950','99901684','99901685','99902607','99902608','99902609',"
+                  "'99902610','99903343','99903339'")
+
+
+def epb_sheet8_bi(shop_id, start, end):
+    """回傳 {emp_code: {'b','c','d','h','i'}}，值為 ERP BI 原始輸出（int）。
+    兩次 SOAP 來回：B/C/D 打 POSLINEV_BI、H/I 打 BIPOS_VIEW。"""
+    d_lo = quote_sql(start.isoformat())
+    d_hi = quote_sql((end + timedelta(days=1)).isoformat())
+    shop = quote_sql(shop_id)
+    result = {}
+
+    def _put(code, key, val):
+        if not code:
+            return
+        try:
+            num = int(round(float(val)))
+        except (TypeError, ValueError):
+            return
+        result.setdefault(str(code).strip(), {})[key] = num
+
+    # ── B/C/D：SHOPPOSB BI（POSLINEV_BI，含稅 = line_total_net + line_tax）──
+    sql_bcd = f"""
+select emp_id1,
+  round(sum(line_total_net + line_tax), 0) as b,
+  round(sum(case when cat3_id = '3003' then line_total_net + line_tax else 0 end), 0) as c,
+  round(sum(case when (cat6_id not in ('6888','6889') or cat6_id is null)
+                  and (cat1_id not in ('1002','1004','1008') or cat1_id is null)
+                  and stk_id not in ({_BI_D_STK_EXCL})
+                  and (trans_type not in ('G','J') or trans_type is null)
+                  and brand_id not in ('297')
+                  and (vip_id not in ('05') or vip_id is null)
+                  and (cat3_id not in ('3047','3003','3004','3018','3019','3012') or cat3_id is null)
+             then line_total_net + line_tax else 0 end), 0) as d
+from poslinev_bi
+where org_id = {quote_sql(ORG_ID)} and shop_id = {shop}
+  and doc_date >= to_date({d_lo}, 'yyyy-mm-dd') and doc_date < to_date({d_hi}, 'yyyy-mm-dd')
+group by emp_id1
+"""
+    headers, rows = run_remote(sql_bcd, timeout=120)
+    for row in rows:
+        row = (row + [""] * 4)[:4]
+        _put(row[0], "b", row[1]); _put(row[0], "c", row[2]); _put(row[0], "d", row[3])
+
+    # ── H/I：BISHOP 報表 13/14（BIPOS_VIEW，未稅毛利 = 收入÷1.05 − 成本）──
+    # 共同排除條件放 WHERE；Apple/3PP 差異（cat3 條件 + stk 排除碼）放 case mask。
+    common = f"""(cat6_id not in ('6888','6889') or cat6_id is null)
+  and (cat1_id not in ('1002','1004','1008') or cat1_id is null)
+  and (trans_type not in ('G','J') or trans_type is null)
+  and brand_id not in ('297')
+  and (class_id not in ('05') or class_id is null)"""
+    h_mask = (f"(cat3_id not in ('3047','3003','3004','3018','3019','3012','3006') or cat3_id is null)"
+              f" and stk_id not in ({_BI_H_STK_EXCL})")
+    i_mask = f"cat3_id in ('3003','3004','3018','3019','3012','3006') and stk_id not in ({_BI_I_STK_EXCL})"
+    # decode(trans_type,'G','I','J','K' -> 0, 否則金額)：含尾款 H、排除訂金/退訂/I/K
+    def gross(mask):
+        rev = (f"round(sum(case when {mask} then "
+               f"decode(trans_type,'G',0,'I',0,'J',0,'K',0, qty*unit_price)/1.05 else 0 end), 0)")
+        cost = (f"round(sum(case when {mask} then "
+                f"decode(trans_type,'G',0,'I',0,'J',0,'K',0, qty*unit_cost) else 0 end), 0)")
+        return f"({rev} - {cost})"
+    sql_hi = f"""
+select emp_id, {gross(h_mask)} as h, {gross(i_mask)} as i
+from bipos_view
+where org_id = {quote_sql(ORG_ID)} and loc_id = {shop}
+  and doc_date >= to_date({d_lo}, 'yyyy-mm-dd') and doc_date < to_date({d_hi}, 'yyyy-mm-dd')
+  and {common}
+group by emp_id
+"""
+    headers, rows = run_remote(sql_hi, timeout=120)
+    for row in rows:
+        row = (row + [""] * 3)[:3]
+        _put(row[0], "h", row[1]); _put(row[0], "i", row[2])
+
+    return result
+
+
+def override_sheet8_with_bi(ws, bi):
+    """用 ERP BI 原始值覆寫第 8 頁 B/C/D/H/I 欄與「加總」列。
+    員工列順序、加總列掃描方式與 engine.fill_sheet6 一致。"""
+    col_map = {"b": 2, "c": 3, "d": 4, "h": 8, "i": 9}
+    employees = engine.EMPLOYEES
+    for i, (code, _) in enumerate(employees):
+        row = i + 2
+        vals = bi.get(str(code).strip(), {})
+        for key, col in col_map.items():
+            ws.cell(row=row, column=col).value = vals.get(key) or None  # 0 → 空白
+
+    emp_end = 1 + len(employees)
+    total_row = None
+    for r in range(emp_end + 1, emp_end + 10):
+        cell_val = ws.cell(row=r, column=1).value
+        if cell_val is not None and "加總" in str(cell_val):
+            total_row = r
+            break
+    if total_row is None:
+        total_row = emp_end + 1
+    for col in [2, 3, 4, 5, 8, 9]:  # 含 E(5)：E 仍由引擎填，加總需含它
+        total = sum(ws.cell(row=r, column=col).value or 0 for r in range(2, emp_end + 1))
+        ws.cell(row=total_row, column=col).value = total or None
+
+
+def fill_employee_report_sheets(wb, df_cur, sacare_prices, dates, sheet8_bi=None):
     engine.fill_sheet6(wb["8.個人新制獎金"], df_cur, sacare_prices, dates)
+    if sheet8_bi is not None:
+        override_sheet8_with_bi(wb["8.個人新制獎金"], sheet8_bi)
     engine.fill_sheet78(wb["9.個人週主機"], wb["10.個人月主機"], df_cur, sacare_prices, dates)
     engine.fill_sheet9(wb["11.個人月3PP"], df_cur, sacare_prices, dates)
     finalize_known_formulas(wb)
@@ -1098,8 +1223,16 @@ def build_report_workbook(payload, log=lambda m: None):
                         traffic=traffic10, emp_count=emp_count)
     engine.fill_sheet11(wb["13.3PP YOY"], df_cur, df_prev, sacare_prices, dates)
 
+    log("查詢第 8 頁 ERP BI（總業績/3PP/原廠/Apple毛利/3PP毛利）…")
+    try:
+        sheet8_bi = epb_sheet8_bi(shop_id, dates["mo_start"], dates["mo_end"])
+        log(f"  取得 {len(sheet8_bi)} 位員工 BI 數據（本月 {dates['mo_start']}~{dates['mo_end']}）")
+    except Exception as exc:  # BI 查詢失敗時退回引擎計算值，報表照常產生
+        sheet8_bi = None
+        log(f"  ⚠ ERP BI 查詢失敗，第 8 頁 B/C/D/H/I 暫用引擎計算值：{exc}")
+
     log("填入個人 8-11 報表…")
-    fill_employee_report_sheets(wb, df_cur, sacare_prices, dates)
+    fill_employee_report_sheets(wb, df_cur, sacare_prices, dates, sheet8_bi=sheet8_bi)
 
     active_employees = filter_employees_by_report_numbers(wb, employees)
     if active_employees != employees:
@@ -1107,7 +1240,7 @@ def build_report_workbook(payload, log=lambda m: None):
         engine.EMPLOYEES = active_employees
         engine.EMP_CODES = [code for code, _ in active_employees]
         rebuild_employee_report_sheets(wb, active_employees, len(employees))
-        fill_employee_report_sheets(wb, df_cur, sacare_prices, dates)
+        fill_employee_report_sheets(wb, df_cur, sacare_prices, dates, sheet8_bi=sheet8_bi)
         employees = active_employees
 
     bundle = load_bundle_stats(shop_id, wk_start, wk_end, fiscal_start, log=log)
