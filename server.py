@@ -929,7 +929,10 @@ def employees_from_sales(df, start_date, end_date, template_employees):
 
 
 def resolve_report_employees(df_cur, dates, template_employees):
-    employees = employees_from_sales(df_cur, dates["wk_start"], dates["wk_end"], template_employees)
+    # 員工列依「整月」有無交易判定：第 8/10/11 頁皆為整月，本週沒業績但整月
+    # 有業績的員工（如月初有單、本週掛零）也要列出；第 9 頁(本週)對這些人顯示零，
+    # 之後 filter_employees_by_report_numbers 再把整月全空者剔除。
+    employees = employees_from_sales(df_cur, dates["mo_start"], dates["mo_end"], template_employees)
     return employees or []
 
 
@@ -1209,7 +1212,7 @@ def build_report_workbook(payload, log=lambda m: None):
     engine.EMPLOYEES = employees
     engine.EMP_CODES = [code for code, _ in employees]
     rebuild_employee_report_sheets(wb, employees, template_employee_count)
-    log(f"  本週有交易員工 {len(employees)} 人")
+    log(f"  本月有交易員工 {len(employees)} 人")
 
     log("填入 1-5 報表…")
     engine.fill_sheet1(wb["1.主機銷售台數"], df_cur, quarter_start, wk_end)
