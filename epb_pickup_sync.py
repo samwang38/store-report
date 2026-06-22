@@ -4,7 +4,7 @@ EPB → 預約工作台 銷售比對 同步腳本（Pattern B：店內 Mac 主�
 
 做什麼：
   1) 向 EPB 查近 N 天某門市的「已成交」銷售（trans_type A 銷售 / H 尾款，扣 E 銷退）。
-  2) 整理成去識別化快照 {updatedAt, sold:[{v:會員碼, s:存貨碼, d:成交日}]}。
+  2) 整理成去識別化快照 {updatedAt, sold:[{v:會員碼, s:存貨碼, d:成交日, q:淨購買數量}]}。
   3) POST 到 Cloudflare Worker 的 /epb/ingest（帶 secret）寫入 KV，供網頁讀取比對。
 
 自我節流（搭配 launchd 每 300 秒/5 分鐘呼叫）：
@@ -163,7 +163,8 @@ def fetch_all_sold():
             if d and d > b["last"].get(key, ""):
                 b["last"][key] = d
 
-    out = {shop: [{"v": v, "s": s, "d": b["last"].get((v, s), "")}
+    # q＝淨購買數量（A 銷售＋H 尾款扣 E 銷退）；門市單位皆整數，四捨五入存 int 供前端按量比對
+    out = {shop: [{"v": v, "s": s, "d": b["last"].get((v, s), ""), "q": int(round(q))}
                   for (v, s), q in b["net"].items() if q > 0]
            for shop, b in per.items()}
     # 設定清單裡的店即使無資料也回空（讓索引有同步時間）
