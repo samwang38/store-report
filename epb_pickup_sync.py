@@ -225,6 +225,90 @@ def sync_models():
     return len(found), len(norm)
 
 
+# ───────── EPB 即時庫存（供預約工作台「門市遞補」頁可配貨防呆） ─────────
+# 前端按「同步庫存」把清單內存貨代碼依「門市名稱」排入 Worker 待查；本腳本在同步時
+# 取走、查 EPB 即時庫存 view 回填。可配貨數量＝庫存－(已到貨＋保留) 由前端用預約資料算。
+#   庫存 view：INVQTY_VIEW（欄位 STORE_ID/STK_ID/STK_QTY；同代碼跨批次多列須 SUM）
+#   STORE_ID＝庫存倉別代碼，士林為 'SA004'（注意：銷售用 SHOP_ID='004'，庫存須加 'SA' 前綴）
+#   查無資料視為 0；庫存可能為負，保留原值。
+STOCK_TABLE = cfg("stockTable", "EPB_STOCK_TABLE", "invqty_view")
+STORE_ID_PREFIX = cfg("storeIdPrefix", "EPB_STORE_ID_PREFIX", "SA")
+
+
+def _norm_shop(s):
+    """與 Worker normShop 一致：去空白、去尾綴「門市/店」，讓『士林』與『士林門市』視為同店。"""
+    s = "".join((s or "").split())
+    for suf in ("門市", "店"):
+        if s.endswith(suf):
+            return s[: -len(suf)]
+    return s
+
+
+def _name_to_store_id():
+    """門市名稱 → 庫存 STORE_ID（正規化名稱比對）。
+    名稱對照來自 shop_id_to_name()（FALLBACK_STORES＋pos_shop），庫存代碼＝前綴＋shop_id。"""
+    out = {}
+    for shop_id, name in shop_id_to_name().items():
+        out[_norm_shop(name)] = f"{STORE_ID_PREFIX}{shop_id}"
+    return out
+
+
+def claim_pending_stock():
+    """取走 Worker 端待查庫存清單（需 secret）。回 {店名: [stk,...]}。"""
+    try:
+        return _post("/epb/stock/claim-pending", {}, with_secret=True).get("shops") or {}
+    except Exception as e:
+        print(f"[warn] claim-pending(stock) 失敗（忽略）：{e}", file=sys.stderr)
+        return {}
+
+
+def fetch_stock(store_id, stks):
+    """查某倉別指定存貨代碼的即時庫存 → {stk_id: 數量}。分批避開 Oracle IN 上限。"""
+    found = {}
+    safe_store = store_id.replace("'", "")
+    for i in range(0, len(stks), 900):
+        chunk = stks[i:i + 900]
+        ids = ",".join("'" + s.replace("'", "") + "'" for s in chunk)
+        sql = (f"select stk_id, sum(nvl(stk_qty,0)) cur from {STOCK_TABLE} "
+               f"where store_id = '{safe_store}' and stk_id in ({ids}) group by stk_id")
+        headers, rows = server.run_remote(sql)
+        idx = {h.upper(): j for j, h in enumerate(headers)}
+        si, qi = idx["STK_ID"], idx["CUR"]
+        for r in rows:
+            sid = str(r[si]).strip()
+            try:
+                qty = float(r[qi] or 0)
+            except (TypeError, ValueError):
+                qty = 0.0
+            if sid:
+                found[sid] = int(round(qty))
+    return found
+
+
+def sync_stock():
+    """取待查庫存（依門市）→ 查 EPB 即時庫存 → 回填 Worker。回 (店數, 代碼數)。
+    查無資料的代碼回填 0，讓前端知道已同步且現貨為 0。"""
+    shops = claim_pending_stock()
+    if not shops:
+        return 0, 0
+    name2store = _name_to_store_id()
+    total_codes = 0
+    for shop, stks in shops.items():
+        norm = [str(s).strip() for s in stks if str(s).strip()]
+        if not norm:
+            continue
+        store_id = name2store.get(_norm_shop(shop))
+        if not store_id:
+            print(f"[warn] 庫存：找不到門市「{shop}」對應的 STORE_ID，略過", file=sys.stderr)
+            continue
+        found = fetch_stock(store_id, norm)
+        stock = {s: found.get(s, 0) for s in norm}  # 查無資料 → 0
+        _post("/epb/stock/ingest", {"shop": shop, "stock": stock}, with_secret=True)
+        total_codes += len(norm)
+        print(f"[ok] 庫存回填「{shop}」（{store_id}）：{len(norm)} 個代碼")
+    return len(shops), total_codes
+
+
 def post_sync_log(entry):
     """回報一筆同步紀錄到 Worker（供系統狀態頁；無個資）；失敗忽略。"""
     try:
@@ -255,9 +339,17 @@ def run_sync():
     except Exception as e:
         print(f"[warn] 型號同步失敗（忽略，不影響銷售同步）：{e}", file=sys.stderr)
 
+    # 同一趟回填門市遞補頁要的即時庫存（只查前端「同步庫存」排入的代碼）
+    stock_shops, stock_codes = 0, 0
+    try:
+        stock_shops, stock_codes = sync_stock()
+    except Exception as e:
+        print(f"[warn] 庫存同步失敗（忽略，不影響銷售同步）：{e}", file=sys.stderr)
+
     post_sync_log({
         "at": ts, "ok": True, "shops": shops_summary, "sold": total,
         "models": {"found": model_found, "asked": model_asked},
+        "stock": {"shops": stock_shops, "codes": stock_codes},
     })
 
 
