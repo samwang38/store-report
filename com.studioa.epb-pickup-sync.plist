@@ -28,7 +28,7 @@
   <string>/Users/sa/Claude/週報製作/報表製作_士林/live-store-report-app</string>
 
   <key>StartInterval</key>
-  <integer>60</integer>
+  <integer>120</integer>
 
   <key>RunAtLoad</key>
   <true/>
