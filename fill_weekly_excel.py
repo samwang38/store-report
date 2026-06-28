@@ -9,7 +9,9 @@ Usage:
     --template   /path/to/週報模板.xlsx \
     --output     /path/to/週報_2026-04-05~04-11.xlsx
 """
-VERSION = "1.1.21"
+from __future__ import annotations
+
+VERSION = "1.1.22"
 
 import argparse, glob, shutil, sys
 from datetime import date, timedelta

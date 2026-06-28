@@ -6,6 +6,7 @@ REPO="https://github.com/samwang38/store-report.git"
 DEST="$HOME/Desktop/門市報表製作-app"
 PORT=8783
 URL="http://127.0.0.1:$PORT/"
+VENV_DIR="venv"
 
 cd "$(dirname "$0")"
 
@@ -74,16 +75,37 @@ if ! command -v python3 &>/dev/null; then
   exit 1
 fi
 
+# ── 使用專案虛擬環境，避免 Homebrew Python 的 PEP 668 限制 ────
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+  echo "建立專用 Python 環境…"
+  if ! python3 -m venv "$VENV_DIR"; then
+    echo "[錯誤] 無法建立 Python 虛擬環境。"
+    echo "請先執行：brew install python"
+    read -p "按 Enter 關閉"
+    exit 1
+  fi
+fi
+PYTHON="$VENV_DIR/bin/python"
+
 # ── 缺套件才安裝 ──────────────────────────────────────────────
-if ! python3 -c "import openpyxl, pandas, requests" 2>/dev/null; then
+if ! "$PYTHON" -c "import openpyxl, pandas, requests" 2>/dev/null; then
   echo "安裝必要套件中…"
-  pip3 install openpyxl pandas requests --quiet
+  if ! "$PYTHON" -m pip install openpyxl pandas requests --quiet; then
+    echo "[錯誤] Python 套件安裝失敗，請確認網路連線。"
+    read -p "按 Enter 關閉"
+    exit 1
+  fi
 fi
 
 # ── 來客數查詢需要 Playwright（首次安裝較久，約 150MB）──────────
-if ! python3 -c "import playwright" 2>/dev/null; then
+if ! "$PYTHON" -c "import playwright" 2>/dev/null; then
   echo "安裝來客數查詢元件（Playwright）…"
-  pip3 install playwright --quiet && python3 -m playwright install chromium
+  if ! "$PYTHON" -m pip install playwright --quiet ||
+     ! "$PYTHON" -m playwright install chromium; then
+    echo "[錯誤] Playwright 安裝失敗，請確認網路連線。"
+    read -p "按 Enter 關閉"
+    exit 1
+  fi
 fi
 
 echo "啟動伺服器（port $PORT）…"
@@ -101,4 +123,4 @@ echo "-------------------------------------------"
     sleep 0.5
   done ) &
 
-python3 server.py
+"$PYTHON" server.py
