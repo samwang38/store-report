@@ -108,6 +108,14 @@ if ! "$PYTHON" -c "import playwright" 2>/dev/null; then
   fi
 fi
 
+# ── 已有伺服器在跑（例如重複點兩下）→ 直接開瀏覽器，不重複啟動 ──
+if curl -s -o /dev/null --max-time 1 "$URL"; then
+  echo "偵測到伺服器已在執行中，直接開啟瀏覽器。"
+  open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL"
+  read -p "按 Enter 關閉此視窗"
+  exit 0
+fi
+
 echo "啟動伺服器（port $PORT）…"
 echo "請連好公司 VPN。瀏覽器將自動開啟：$URL"
 echo "關閉此視窗即可停止。"

@@ -1623,7 +1623,16 @@ def main():
                 pass
         threading.Thread(target=_dss_restore, daemon=True).start()
     port = int(os.environ.get("PORT", "8783"))
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError as exc:
+        if exc.errno == 48:  # Address already in use
+            sys.exit(
+                f"port {port} 已被使用中，伺服器可能已經在執行。\n"
+                f"請直接開瀏覽器連到 http://127.0.0.1:{port}/，"
+                "或關閉先前開啟的視窗後再重新啟動。"
+            )
+        raise
     print(f"門市報表製作：http://127.0.0.1:{port}", flush=True)
     print("按 Ctrl+C 停止", flush=True)
     try:
