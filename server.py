@@ -548,7 +548,8 @@ def load_traffic(shop_id, dates, log=lambda m: None):
 
 # ─── DSS 搭售統計（Sheet 6/7）─────────────────────────────────────────
 # Sheet 6「搭售統計_週」：本期＝本週（週日～週六），歷史 3 列＝前 3 個完整週（W{財務季週次}）
-# Sheet 7「搭售統計_月」：本期＝本月 1 日～週結束日，歷史 3 列＝前 3 個完整日曆月（{n}月）
+# Sheet 7「搭售統計_月」：本期比照其他月報表 compute_periods() 的 mo_start~mo_end
+#   （跨月週取 wk_start 那個月的整月，同月週則取 1 日～週結束日），歷史 3 列＝前 3 個完整日曆月（{n}月）
 # 定義（2026-06 與 DSS「3PP搭售率報表(人)」逐格核對確認）：
 #   m=搭售台數（有搭配件的主機）、s=配件數、ms=零搭售台數
 #   搭售率=s/m、零搭售比例=ms/(m+ms)、AA 3PP搭售率=Σs/Σm
@@ -561,20 +562,20 @@ BUNDLE_GROUP_COLS = (("cpu", 2), ("iphone", 7), ("ipad", 12),
 BUNDLE_3PP_COL = 27  # AA
 
 
-def load_bundle_stats(shop_id, wk_start, wk_end, fiscal_start, log=lambda m: None):
+def load_bundle_stats(shop_id, wk_start, wk_end, mo_start, mo_end, fiscal_start, log=lambda m: None):
     """抓搭售統計（8 個區間）。預設 EPB 直接計算（免登入），失敗自動退 DSS。
 
     local_config.json 可設 "bundleSource": "dss" 強制改回 DSS 為主。
     EPB 演算法與 DSS 經 5 週 155 數據點驗證（154 吻合，唯一差異為 DSS 端漏單）。
-    失敗回 None → 略過 Sheet 6/7。
+    失敗回 None → 略過 Sheet 6/7。mo_start/mo_end 直接沿用 compute_periods() 算好的
+    「本月」區間，與 Sheet 8/10/11/12 等其他月報表口徑一致（含進階自訂區間覆寫）。
     """
     periods = {("w", 0): (wk_start, wk_end)}
     for i in (1, 2, 3):
         s = wk_start - timedelta(days=7 * i)
         periods[("w", i)] = (s, s + timedelta(days=6))
-    mo_first = wk_end.replace(day=1)
-    periods[("m", 0)] = (mo_first, wk_end)
-    cursor = mo_first
+    periods[("m", 0)] = (mo_start, mo_end)
+    cursor = mo_start
     for i in (1, 2, 3):
         last_end = cursor - timedelta(days=1)
         periods[("m", i)] = (last_end.replace(day=1), last_end)
@@ -1260,7 +1261,7 @@ def build_report_workbook(payload, log=lambda m: None):
         fill_employee_report_sheets(wb, df_cur, sacare_prices, dates, sheet8_bi=sheet8_bi)
         employees = active_employees
 
-    bundle = load_bundle_stats(shop_id, wk_start, wk_end, fiscal_start, log=log)
+    bundle = load_bundle_stats(shop_id, wk_start, wk_end, dates["mo_start"], dates["mo_end"], fiscal_start, log=log)
     if bundle:
         log("填入 6-7 搭售統計…")
         fill_bundle_sheets(wb, bundle, employees, log=log)
