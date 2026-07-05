@@ -57,7 +57,21 @@ JAVA = (
     else f"{_JAVA_HOME}/bin/java"
 )
 JAVAC = f"{_JAVA_HOME}/bin/javac"
-JAVA_CP = f"{ROOT}:/Library/EPBrowser/EPB/Shell/lib/*:/Library/EPBrowser/EPB/Shell/shell.jar"
+EPB_HOME = Path(os.environ.get("EPB_HOME", "/Library/EPBrowser"))
+EPB_SHELL = EPB_HOME / "EPB" / "Shell"
+JAVA_CP = ":".join(
+    [
+        str(ROOT),
+        str(EPB_SHELL / "classes"),
+        str(EPB_SHELL / "lib" / "*"),
+        str(EPB_SHELL / "shell.jar"),
+        str(EPB_HOME / "Tools" / "lib" / "*"),
+    ]
+)
+EPB_CLIENT_JARS = (
+    EPB_SHELL / "lib" / "epbwsc.jar",
+    EPB_HOME / "Tools" / "lib" / "EPB_AP_EPB_CLIENT.jar",
+)
 
 LOCAL_CONFIG_PATH = ROOT / "local_config.json"
 
@@ -1590,6 +1604,14 @@ def main():
                 "請安裝 JDK 1.8，或設定環境變數 EPB_JAVA_HOME 指到 JDK Home 目錄，例如：\n"
                 "  export EPB_JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_251.jdk/Contents/Home"
             )
+    if not any(path.exists() for path in EPB_CLIENT_JARS):
+        checked = "\n".join(f"  - {path}" for path in EPB_CLIENT_JARS)
+        sys.exit(
+            "找不到 EPBrowser 查詢函式庫（com.epb.ap）。\n"
+            "請先在這台 Mac 安裝完整 EPBrowser，程式已檢查：\n"
+            f"{checked}\n"
+            "若 EPBrowser 安裝在其他位置，請設定 EPB_HOME 指到其根目錄。"
+        )
     compile_java("EPBReportQuery.java")
     if dss_mod is not None:
         # 嘗試還原上次 DSS session（背景執行，不阻擋啟動）
