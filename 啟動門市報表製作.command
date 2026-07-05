@@ -68,6 +68,11 @@ if command -v git &>/dev/null && [ -d ".git" ]; then
   echo ""
 fi
 
+if [ -f VERSION ]; then
+  echo "版本：v$(tr -d '[:space:]' < VERSION)"
+  echo ""
+fi
+
 # ── 檢查 Python ───────────────────────────────────────────────
 if ! command -v python3 &>/dev/null; then
   echo "[錯誤] 找不到 python3，請先安裝 Python 3。"
