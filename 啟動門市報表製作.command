@@ -103,9 +103,23 @@ if ! "$PYTHON" -c "import openpyxl, pandas, requests" 2>/dev/null; then
 fi
 
 # ── 來客數查詢需要 Playwright（首次安裝較久，約 150MB）──────────
-if ! "$PYTHON" -c "import playwright" 2>/dev/null; then
+# 只檢查套件是否裝了不夠：瀏覽器快取（~/Library/Caches/ms-playwright）
+# 可能被系統清理工具清掉，套件還在但執行檔不見，要一併檢查執行檔是否存在。
+PLAYWRIGHT_BROWSER_OK=0
+if "$PYTHON" -c "import playwright" 2>/dev/null; then
+  if "$PYTHON" -c "
+from playwright.sync_api import sync_playwright
+import os
+with sync_playwright() as p:
+    raise SystemExit(0 if os.path.exists(p.chromium.executable_path) else 1)
+" 2>/dev/null; then
+    PLAYWRIGHT_BROWSER_OK=1
+  fi
+fi
+
+if [ "$PLAYWRIGHT_BROWSER_OK" != "1" ]; then
   echo "安裝來客數查詢元件（Playwright）…"
-  if ! "$PYTHON" -m pip install playwright --quiet ||
+  if ! "$PYTHON" -m pip install --upgrade playwright --quiet ||
      ! "$PYTHON" -m playwright install chromium; then
     echo "[錯誤] Playwright 安裝失敗，請確認網路連線。"
     read -p "按 Enter 關閉"
