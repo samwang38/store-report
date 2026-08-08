@@ -54,7 +54,7 @@ EPB 原始欄位 → 標準中文欄位 DataFrame（與 800AB 匯出格式一致
 - **C6（類別6）細分型號**（每代更新）：Mac 台數必須用 C6 區分 MacBook/mini/iMac — `C6_CPU` 常數（6001=iMac、6002=mini、634x=各代 MacBook），**新 Mac 世代上市只需更新引擎的 `C6_CPU`**
 - **SAcare 各機種 C6**：cpu=6533、ipad=6534、iphone=6535、watch=6536、airpods=6537
 - **認證機（整新機）品牌** {881,885,886,888}：計台數時 bypass C3 條件
-- **VAP 品牌** {59, 224, 277}
+- **VAP 品牌** {59, 224, 277, 106}
 
 ### SAcare 特殊處理
 - SAcare 品項不在 EPB 內判定，以 `銷售資料/SAcare對應價目表.xlsx` 的存貨代碼→價格對照表為準。
