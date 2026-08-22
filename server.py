@@ -732,22 +732,21 @@ def clear_bundle_sheets(wb):
                     ws.cell(row=row, column=col).value = None
 
 
-# ─── EPB 並行計算搭售統計（反推 DSS 規則，2026-06 當週 231 列明細逐列驗證一致）──
+# ─── EPB 並行計算搭售統計（反推 DSS 規則；2026-06 逐列驗證，2026-08 補最高價/產業排除）──
 # 規則（與 DSS「3PP搭售率報表」完全重現）：
 #   主機：C3=3001 且 C4∈{4001,4002}=CPU / 4004=iPhone / {4005,4006,4041}=iPad / 4038=Watch；
 #         AirPods＝C3=3002 且 C4=4014 且 C6∈C6_AIRPODS
-#   配件：C3=3003（3PP）。歸類：自身 C4 類別若在同單主機類別中→該類；
-#         否則跟著同單唯一主機類；無主機單→跟著同 VIP 當日主機類（VIP 當日無主機→不計）
-#   搭售：每單每類別有歸類配件時，該類「1 台」記搭售、其餘記零搭售（POS 組合販賣行為）；
+#   配件：C3=3003（3PP）。歸類：跟著「同單最高價主機」的類別（3001 主機層優先於 AirPods 層）；
+#         同單無主機→跟著同 VIP 當日最高價主機（VIP 當日無主機→不計）
+#   搭售：每單每類別有歸類配件時，該類「單價最高的 1 台」記搭售、其餘記零搭售（POS 組合販賣行為）；
 #         純配件單可讓同 VIP 同日同類別尚無搭售的 1 台零搭售升級為搭售
+#   排除：會員產業 OCCUPATION_ID 88（企業公司戶）、99（通訊業/大量購買）整張單不列入統計
 #   交易：A/H 正計、E 負計（qty 相加自然沖銷）
 
-BUNDLE_EPB_OWN_C4 = {4007.0: "cpu", 4009.0: "iphone", 4010.0: "ipad",
-                     4039.0: "watch", 4069.0: "airpods",
-                     4022.0: "iphone", 4012.0: "iphone"}
-
-
 BUNDLE_CERT_BRANDS = {881.0, 885.0, 886.0, 888.0}   # 認證機/整新機品牌：bypass C3，DSS 一樣計主機
+
+# 會員產業代碼（POS_VIP_MAS.OCCUPATION_ID）：DSS 3PP 報表不計這兩類客戶的單
+BUNDLE_EXCLUDE_OCC = {"88", "99"}   # 88=企業公司戶、99=通訊業（大量購買）
 
 
 def _bundle_mach_cat(c3, c4, c6, brand=None):
@@ -767,9 +766,9 @@ def _bundle_mach_cat(c3, c4, c6, brand=None):
 
 def _epb_bundle_query(shop_id, start_d, end_d):
     headers, raw = run_remote(f"""
-select doc_id, trans_type, emp_id1, stk_qty,
+select doc_id, trans_type, emp_id1, stk_qty, line_total_net,
        cat3_id, cat4_id, cat6_id, brand_id, coalesce(vip_id,'') vip,
-       to_char(doc_date,'yyyymmdd') dd
+       coalesce(occupation_id,'') occ, to_char(doc_date,'yyyymmdd') dd
 from poslinev_bi
 where shop_id = {quote_sql(str(shop_id))} and org_id = '01'
   and doc_date >= to_date('{start_d.isoformat()}','yyyy-mm-dd')
@@ -800,13 +799,19 @@ def epb_bundle_stats(shop_id, start_d, end_d, _prefetched=None):
         # 僅 A=銷售 / E=銷退 / H=尾款 進統計（DSS 明細不含 G 訂金 / J 退訂）
         if r[idx["TRANS_TYPE"]] not in ("A", "E", "H"):
             continue
+        if (r[idx["OCC"]] or "").strip() in BUNDLE_EXCLUDE_OCC:
+            continue   # 企業公司戶／通訊業大量購買，DSS 不列入
         docs.setdefault(r[idx["DOC_ID"]], []).append(r)
 
     def doc_vip(lines):
         v = (lines[0][idx["VIP"]] or "").strip()
         return v if v not in ("", "0") else None   # 無會員不做跨單配對
 
-    # VIP-day 主機類別（3001 主機與 AirPods 分開記，歸類時 3001 優先）
+    def unit_price(r):
+        qty = abs(numf(r[idx["STK_QTY"]])) or 1.0
+        return abs(numf(r[idx["LINE_TOTAL_NET"]])) / qty
+
+    # VIP-day 主機類別 → 該類別當日最高單價（3001 主機與 AirPods 分開記，歸類時 3001 優先）
     vipday_m3001, vipday_mair = {}, {}
     for lines in docs.values():
         vip = doc_vip(lines)
@@ -815,19 +820,16 @@ def epb_bundle_stats(shop_id, start_d, end_d, _prefetched=None):
         for r in lines:
             g = _bundle_mach_cat(numf(r[idx["CAT3_ID"]]), numf(r[idx["CAT4_ID"]]),
                                  numf(r[idx["CAT6_ID"]]), numf(r[idx["BRAND_ID"]]))
+            if not g:
+                continue
             key = (vip, r[idx["DD"]])
-            if g == "airpods":
-                vipday_mair.setdefault(key, set()).add(g)
-            elif g:
-                vipday_m3001.setdefault(key, set()).add(g)
+            pool = vipday_mair if g == "airpods" else vipday_m3001
+            cats = pool.setdefault(key, {})
+            cats[g] = max(cats.get(g, 0.0), unit_price(r))
 
-    def pick_cat(own, cats):
-        """own C4 類別優先；否則唯一主機類別；多類別且 own 不在其中 → own（可能 None）。"""
-        if own in cats:
-            return own
-        if len(cats) == 1:
-            return next(iter(cats))
-        return own
+    def top_cat(cats):
+        """cats={類別: 最高單價} → 單價最高的類別（DSS：配件全部掛同單最高價主機）。"""
+        return max(cats.items(), key=lambda kv: kv[1])[0] if cats else None
 
     entries = []   # (emp, cat, kind B/A/Z, qty, vip, dd)
     free_acc = {}  # (vip, dd, cat) → 純配件單配件數
@@ -841,18 +843,20 @@ def epb_bundle_stats(shop_id, start_d, end_d, _prefetched=None):
                 machs.append((r, g))
             elif c3 == 3003.0:
                 accs.append(r)
-        m3001 = {g for _, g in machs if g != "airpods"}
-        mair = {g for _, g in machs if g == "airpods"}
+        m3001, mair = {}, {}
+        for r, g in machs:
+            pool = mair if g == "airpods" else m3001
+            pool[g] = max(pool.get(g, 0.0), unit_price(r))
         acc_cat_count = {}
         for r in accs:
-            own = BUNDLE_EPB_OWN_C4.get(numf(r[idx["CAT4_ID"]]))
             g, is_free = None, False
-            # 歸類優先序：同單 3001 主機 → 同單 AirPods → 同 VIP 當日 3001 → 當日 AirPods
+            # 歸類優先序：同單 3001 主機 → 同單 AirPods → 同 VIP 當日 3001 → 當日 AirPods；
+            # 每一層取該層「單價最高」的主機類別
             for cats, free in ((m3001, False), (mair, False),
-                               (vipday_m3001.get((vip, dd), set()) if vip else set(), True),
-                               (vipday_mair.get((vip, dd), set()) if vip else set(), True)):
+                               (vipday_m3001.get((vip, dd), {}) if vip else {}, True),
+                               (vipday_mair.get((vip, dd), {}) if vip else {}, True)):
                 if cats:
-                    g, is_free = pick_cat(own, cats), free
+                    g, is_free = top_cat(cats), free
                     break
             if g is None:
                 continue   # 無任何主機脈絡 → 不列入統計（與 DSS 明細一致）
@@ -865,7 +869,7 @@ def epb_bundle_stats(shop_id, start_d, end_d, _prefetched=None):
         for r, g in machs:
             bycat.setdefault(g, []).append(r)
         for g, ms in bycat.items():
-            for i, r in enumerate(ms):
+            for i, r in enumerate(sorted(ms, key=unit_price, reverse=True)):
                 kind = "B" if (acc_cat_count.get(g, 0) > 0 and i == 0) else "Z"
                 entries.append((r[idx["EMP_ID1"]], g, kind, numf(r[idx["STK_QTY"]]), vip, dd))
 
