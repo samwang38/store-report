@@ -71,11 +71,12 @@
   function updateYoyHint() {
     // 年對年截止日留空時，視同採用週結束日
     const val = yoyEndInput.value || weekEndInput.value;
-    if (!val) { yoyRangeHint.textContent = '留空則沿用週結束日'; return; }
+    if (!val) { yoyRangeHint.textContent = '留空則沿用週結束日；Speakers 年累積算到本月結束日'; return; }
     const end = new Date(val + 'T00:00:00');
     const y = end.getFullYear();
     const md = `${String(end.getMonth()+1).padStart(2,'0')}/${String(end.getDate()).padStart(2,'0')}`;
-    const note = yoyEndInput.value ? '' : '（沿用週結束日）';
+    const note = yoyEndInput.value ? '；Speakers 年累積同此截止日'
+                                   : '（沿用週結束日；Speakers 年累積算到本月結束日）';
     yoyRangeHint.textContent = `年對年比較：${y-1}/01/01～${y-1}/${md} vs ${y}/01/01～${y}/${md}${note}`;
   }
 
@@ -268,7 +269,7 @@
     if (data.error) text = (text ? text + '　' : '') + data.error;
     if (data.state === 'idle' && !data.hasCredentials) text = '未儲存帳密';
     if (data.force && data.state !== 'logged_in') {
-      text = '⚠ 已勾選「強制使用 DSS」但目前未登入，產生報表時搭售統計（Sheet 6/7）會失敗。請先登入或取消勾選。';
+      text = '⚠ 已勾選「強制使用 DSS」但目前未登入，產生報表時搭售統計（Sheet 8/9）會失敗。請先登入或取消勾選。';
     }
     dssStatus.textContent = text;
   }
@@ -484,7 +485,7 @@
       if (!confirm(`年對年截止日（${yoyEnd}）早於週結束日（${wkEnd}），確定要這樣產生嗎？`)) return;
     }
 
-    // 強制 DSS 模式：未登入直接擋下，避免 Sheet 6/7 必然失敗
+    // 強制 DSS 模式：未登入直接擋下，避免 Sheet 8/9 必然失敗
     try {
       const dss = await (await fetch('/api/dss/status')).json();
       renderDssState(dss);

@@ -21,7 +21,7 @@
       <div class="hero">
         <div class="eyebrow">STORE REPORT GENERATOR</div>
         <h1>門市報表製作</h1>
-        <p class="hero-sub">選擇門市與週期，一鍵產生 13 張週報。</p>
+        <p class="hero-sub">選擇門市與週期，一鍵產生 15 張週報。</p>
       </div>
 
       <section class="card" id="configCard" style="--i:0">
@@ -36,12 +36,12 @@
             <div class="row-control"><input type="date" id="weekEnd"></div>
           </div>
           <div class="row">
-            <label class="row-label" for="yoyEnd">年對年截止日<span class="row-sub">12/13 頁</span></label>
+            <label class="row-label" for="yoyEnd">年對年截止日<span class="row-sub">14/15 頁・Speakers 年累積</span></label>
             <div class="row-control"><input type="date" id="yoyEnd"></div>
           </div>
         </div>
         <p class="footnote" id="weekRangeHint"></p>
-        <p class="footnote" id="yoyRangeHint">留空則沿用週結束日。</p>
+        <p class="footnote" id="yoyRangeHint">留空則沿用週結束日；第 4 頁 Speakers 的年累積金額留空時算到本月結束日。</p>
 
         <details id="advPeriods" class="adv-panel">
           <summary><span class="chevron"></span>進階：自訂計算區間</summary>
@@ -68,7 +68,7 @@
               <input type="date" id="lyStart" aria-label="去年同期起日">
               <input type="date" id="lyEnd" aria-label="去年同期迄日">
             </div>
-            <p class="footnote flush">「本月／上月／去年同期」跨月時自動帶入完整月份。年對年（12/13 頁）仍由上方「年對年截止日」控制。</p>
+            <p class="footnote flush">「本月／上月／去年同期」跨月時自動帶入完整月份。年對年（14/15 頁）與第 4 頁 Speakers 年累積金額，仍由上方「年對年截止日」控制。</p>
           </div>
         </details>
 
@@ -92,7 +92,7 @@
           <span class="card-title collapse-title">來客數設定<span class="card-tag">ShopperTrak</span></span>
           <span class="status-pill" id="stBadge">…</span>
         </summary>
-        <p class="card-desc">帳密只儲存在本機，用於 Sheet 2／12 的來客數與提袋率。未設定則自動略過來客數。</p>
+        <p class="card-desc">帳密只儲存在本機，用於 Sheet 2／14 的來客數與提袋率。未設定則自動略過來客數。</p>
         <div class="group">
           <div class="row">
             <label class="row-label" for="stUser">帳號</label>
@@ -118,7 +118,7 @@
           <span class="card-title collapse-title">搭售統計設定<span class="card-tag">DSS</span></span>
           <span class="status-pill" id="dssBadge">…</span>
         </summary>
-        <p class="card-desc">Sheet 6／7 搭售統計預設由 EPB 直接計算（免登入）。DSS 登入作為備援與比對；勾選「強制使用 DSS」則只用 DSS。</p>
+        <p class="card-desc">Sheet 8／9 搭售統計預設由 EPB 直接計算（免登入）。DSS 登入作為備援與比對；勾選「強制使用 DSS」則只用 DSS。</p>
         <div class="group">
           <div class="row">
             <label class="row-label" for="dssUser">帳號</label>
