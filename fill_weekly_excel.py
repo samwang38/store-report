@@ -101,6 +101,10 @@ VAP_BRANDS     = {59.0, 224.0, 277.0, 106.0}
 MONTHLY_FOCUS_BRANDS = {496.0}
 SPEAKERS_C4          = {4013.0}   # 3PP 藍牙喇叭（同第 5 頁 3PP配件比較的 Speakers 列）
 
+# ─── Sheet 11/12 X 欄「服務費」──────────────────────────────────────────────
+# 99900947 Mac資料轉移/重置系統、99900948 iOS資料轉移/重置系統，統計含稅金額。
+SERVICE_FEE_SKUS = {'99900947', '99900948'}
+
 # ─── D 欄「原廠商品營業額」排除條件 ──────────────────────────────────────────
 C1_EXCLUDED_FROM_APPLE = {1002.0, 1004.0, 1008.0}
 C3_EXCLUDED_FROM_APPLE = {3047.0, 3003.0, 3004.0, 3018.0, 3019.0, 3012.0}
@@ -877,6 +881,8 @@ def calc_employee(df: pd.DataFrame, emp_code: str, sacare_prices: dict) -> dict:
         return int(d.loc[m, 'NET'].sum())
 
     vap_rev    = int(d.loc[d['品牌代碼'].isin(VAP_BRANDS), 'NET'].sum())
+    # 服務費（資料轉移/重置系統）含稅金額，銷退列的 NET 為負值故直接加總即為淨額
+    service_fee = int(d.loc[d['存貨代碼'].astype(str).str.strip().isin(SERVICE_FEE_SKUS), 'NET'].sum())
     _office_mask = d['名稱'].str.lower().str.contains('office|microsoft', na=False)
     office_qty = int(d.loc[_office_mask & d['交易類型'].isin(SALE_TYPES), '數量'].sum()) - \
                  int(d.loc[_office_mask & (d['交易類型'] == '銷退'), '數量'].abs().sum())
@@ -892,6 +898,7 @@ def calc_employee(df: pd.DataFrame, emp_code: str, sacare_prices: dict) -> dict:
         cpu_acc=acc_rev(C4_CPU_SET), iphone_acc=acc_rev(C4_IPHONE_SET),
         ipad_acc=acc_rev(C4_IPAD_SET), watch_acc=acc_rev(C4_WATCH_SET),
         airpods_acc=acc_rev(C4_AIRPODS_SET),
+        service_fee=service_fee,
         cpu_ios_acc=acc_rev({4012.0}),   # CPU/iOS通用週邊
         ios_acc=acc_rev({4022.0}),        # iOS通用週邊配件
         vap_rev=vap_rev, office_qty=office_qty,
@@ -966,6 +973,8 @@ def fill_sheet78(ws7, ws8, df_cur, sacare_prices, dates: dict):
         ]
         for col_offset, v in enumerate(vals):
             ws.cell(row=row, column=col_offset + 2).value = v
+        # X(24) 服務費金額（含稅，銷退已由 NET 帶負號扣回）
+        ws.cell(row=row, column=24).value = m['service_fee'] or None
 
     for i, (code, _) in enumerate(EMPLOYEES):
         row = i + 3  # data starts at row 3
@@ -977,7 +986,7 @@ def fill_sheet78(ws7, ws8, df_cur, sacare_prices, dates: dict):
         total_row = 3 + len(EMPLOYEES)
         emp_rows  = range(3, total_row)
         # Count columns: B(2),C(3),D(4), F(6),G(7),H(8), J(10),K(11),L(12), O(15),P(16),Q(17), S(19),T(20),U(21)
-        count_cols = [2,3,4, 6,7,8, 10,11,12, 15,16,17, 19,20,21]
+        count_cols = [2,3,4, 6,7,8, 10,11,12, 15,16,17, 19,20,21, 24]
         totals = {}
         for col in count_cols:
             totals[col] = sum(ws.cell(row=r, column=col).value or 0 for r in emp_rows)
