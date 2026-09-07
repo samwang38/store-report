@@ -1,6 +1,6 @@
 # 門市報表製作（live-store-report-app）
 
-可下拉選任一門市，產生該門市的士林式 16 張週報（含個人項目動態填入）。
+可下拉選任一門市，產生該門市的士林式 17 張週報（含個人項目動態填入）。
 EPB 即時查詢免登入，採「選日期 → 背景產生 → 下載」的非同步流程。
 
 ## 啟動
@@ -23,7 +23,7 @@ PORT=8899 python3 server.py  # 自訂 port
 
 ## 設計
 
-報表核心（EPB 查詢、16 張填表、個人 11–14 sheet 依當週實際有交易員工動態增刪列）
+報表核心（EPB 查詢、17 張填表、個人 12–15 sheet 依當週實際有交易員工動態增刪列）
 移植自同層 `live-report-app`，邏輯零改動；本工具去掉登入閘、改非同步任務佇列、
 加免登入門市下拉。Web 殼與前端流程仿 `北一區/北一區週報-app`。
 
@@ -49,5 +49,5 @@ PORT=8899 python3 server.py  # 自訂 port
 | `POST /api/dss/login/captcha` | `{code}` 送出帳密＋驗證碼 |
 | `POST /api/dss/login/otp` | `{code}` 送出 Email 驗證碼（二次認證時） |
 
-DSS（搭售統計，Sheet 9/10）：登入需圖形驗證碼、不定時 Email 二次認證，
+DSS（搭售統計，Sheet 10/11）：登入需圖形驗證碼、不定時 Email 二次認證，
 故採前端互動式登入；登入後 session 存於 local_config.json，重啟可續用。

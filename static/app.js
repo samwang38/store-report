@@ -269,7 +269,7 @@
     if (data.error) text = (text ? text + '　' : '') + data.error;
     if (data.state === 'idle' && !data.hasCredentials) text = '未儲存帳密';
     if (data.force && data.state !== 'logged_in') {
-      text = '⚠ 已勾選「強制使用 DSS」但目前未登入，產生報表時搭售統計（Sheet 9/10）會失敗。請先登入或取消勾選。';
+      text = '⚠ 已勾選「強制使用 DSS」但目前未登入，產生報表時搭售統計（Sheet 10/11）會失敗。請先登入或取消勾選。';
     }
     dssStatus.textContent = text;
   }
@@ -430,7 +430,7 @@
     if (all.includes('儲存 Excel'))   return 95;
     if (all.includes('個人報表'))     return 78;
     if (all.includes('年對年報表'))   return 68;
-    if (all.includes('填入 1、4-8'))  return 60;
+    if (all.includes('填入 1-2、5-9')) return 60;
     if (all.includes('員工清單'))     return 45;
     if (all.includes('取得 本期'))    return 30;
     if (all.includes('查詢 EPB'))     return 12;
@@ -486,7 +486,7 @@
       if (!confirm(`年對年截止日（${yoyEnd}）早於週結束日（${wkEnd}），確定要這樣產生嗎？`)) return;
     }
 
-    // 強制 DSS 模式：未登入直接擋下，避免 Sheet 9/10 必然失敗
+    // 強制 DSS 模式：未登入直接擋下，避免 Sheet 10/11 必然失敗
     try {
       const dss = await (await fetch('/api/dss/status')).json();
       renderDssState(dss);

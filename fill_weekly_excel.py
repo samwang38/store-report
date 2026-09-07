@@ -11,7 +11,7 @@ Usage:
 """
 from __future__ import annotations
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 import argparse, glob, shutil, sys
 from datetime import date, timedelta
@@ -95,13 +95,13 @@ C4_WATCH_SET   = {4039.0}
 C4_AIRPODS_SET = {4069.0}
 VAP_BRANDS     = {59.0, 224.0, 277.0, 106.0}
 
-# ─── Sheet 2/3（每月重點 / Speakers）───────────────────────────────────────────
+# ─── Sheet 3/4（每月重點 / Speakers）───────────────────────────────────────────
 # 每月重點：本期統計對象為品牌代碼 496（Starter Kit / Hello Nature 等入門組）。
 # 此頁每月會換統計對象、且未必以品牌區分，換檔時直接改這裡。
 MONTHLY_FOCUS_BRANDS = {496.0}
-SPEAKERS_C4          = {4013.0}   # 3PP 藍牙喇叭（同第 6 頁 3PP配件比較的 Speakers 列）
+SPEAKERS_C4          = {4013.0}   # 3PP 藍牙喇叭（同第 7 頁 3PP配件比較的 Speakers 列）
 
-# ─── Sheet 12/13 X 欄「服務費」──────────────────────────────────────────────
+# ─── Sheet 13/14 X 欄「服務費」──────────────────────────────────────────────
 # 99900947 Mac資料轉移/重置系統、99900948 iOS資料轉移/重置系統，統計含稅金額。
 SERVICE_FEE_SKUS = {'99900947', '99900948'}
 
@@ -168,7 +168,7 @@ def parse_args():
     p.add_argument('--version',    action='store_true', help='顯示版本號後結束')
     p.add_argument('--week-start', required=False)
     p.add_argument('--week-end',   required=False)
-    p.add_argument('--yoy-end',    required=False, help='Sheet 15/16 年對年截止日（YYYY-MM-DD）；預設＝週結束日')
+    p.add_argument('--yoy-end',    required=False, help='Sheet 16/17 年對年截止日（YYYY-MM-DD）；預設＝週結束日')
     p.add_argument('--data-dir',   required=False)
     p.add_argument('--template',   required=False)
     p.add_argument('--output',     required=False)
@@ -234,10 +234,10 @@ REQUIRED_COLUMNS = {
     '類別3代碼':    '主要品類（3001 主機 / 3002 原廠配件 / 3003 三方 / 3032 ACPP）',
     '類別4代碼':    'iPhone / iPad / Watch 台數（C4 穩定代碼）',
     '類別6代碼':    'Mac 機型區分、SAcare 品類、Sheet 1 產品列',
-    '員工代碼':         '個人業績計算（Sheet 11～14）',
-    '折扣':             '排除贈品交易（Sheet 7/8 銷售排名）',
-    '等級代碼':         'Sheet 11 排除等級 05（非全職／兼職員工）',
-    '淨銷售金額(未稅)': 'Sheet 11 H/I 欄毛利計算主要依據（缺少時毛利會變負數）',
+    '員工代碼':         '個人業績計算（Sheet 12～15）',
+    '折扣':             '排除贈品交易（Sheet 8/9 銷售排名）',
+    '等級代碼':         'Sheet 12 排除等級 05（非全職／兼職員工）',
+    '淨銷售金額(未稅)': 'Sheet 12 H/I 欄毛利計算主要依據（缺少時毛利會變負數）',
 }
 
 def validate_columns(df, filepath):
@@ -489,9 +489,77 @@ def fill_sheet1(ws, df_cur: pd.DataFrame, quarter_start: date, week_end: date):
             ws.cell(row=excel_row, column=wi).value = v or None    # W01-W13
         ws.cell(row=excel_row, column=16).value = total or None    # Total
 
-# ─── Sheet 5: 門市週報（fill_sheet2）────────────────────────────────────────────────────────
+# ─── Sheet 2: 教育價（促銷活動名稱含「教育價」）───────────────────────────────
+# 教育價交易＝ERP「促銷活動名稱」(POSLINEV_BI.MC_ID → POS_MC_CODE.MC_NAME) 含「教育價」，
+# 涵蓋 教育價活動／電腦單機教育價／iPad單機教育價／教育價ARpedia活動／ACC 教育價／教育價DG活動。
+# Keyboard 與 Pencil 只算 Apple 原廠（C3=3002 且 C4=4010）；Pencil 排除「筆尖」耗材。
+EDU_KEYWORD = '教育價'
+EDU_ROWS = ['CPU', 'iPad', 'Watch', 'Pencil', 'Keyboard']
+
+
+def _edu_row_mask(d: pd.DataFrame, row: str):
+    c3, c4, c6 = d['類別3代碼'], d['類別4代碼'], d['類別6代碼']
+    name = d['名稱'].fillna('')
+    if row == 'CPU':
+        return (c3 == 3001.0) & c6.isin(C6_CPU)
+    if row == 'iPad':
+        return c4.isin(C4_IPAD)
+    if row == 'Watch':
+        return c4.isin(C4_WATCH)
+    apple_ipad_acc = (c3 == 3002.0) & c4.isin(C4_IPAD_SET)   # 原廠 iPad 週邊配件
+    if row == 'Keyboard':
+        return apple_ipad_acc & (name.str.contains('keyboard', case=False, na=False) |
+                                 name.str.contains('巧控鍵盤', na=False))
+    # Pencil：Apple Pencil 本體，排除「筆尖」耗材
+    return apple_ipad_acc & name.str.contains('pencil', case=False, na=False) & \
+        ~name.str.contains('筆尖', na=False)
+
+
+def fill_sheet_edu(ws, df_cur: pd.DataFrame, quarter_start: date, week_end: date):
+    """第 2 頁 教育價：當季 13 週逐週的總銷售台數 / 教育價台數 / 教育價佔比。
+    區塊：列 1-6 總銷售台數、列 7-12 教育價台數、列 13-18 教育價佔比；
+    欄：B~N＝W1…W13、O＝總計。台數口徑同第 1 頁（銷售＋尾款正計、銷退扣回）。"""
+    print('  Sheet 2: 教育價', flush=True)
+    d = df_cur
+    promo = d.get('促銷活動名稱')
+    # CLI 讀 Excel 的路徑沒有促銷活動名稱 → 教育價一律 0，總台數照算
+    edu_all = promo.fillna('').str.contains(EDU_KEYWORD, na=False) if promo is not None \
+        else pd.Series(False, index=d.index)
+
+    weeks = [(quarter_start + timedelta(weeks=i),
+              quarter_start + timedelta(weeks=i, days=6)) for i in range(13)]
+
+    def units(mask) -> int:
+        sale = d.loc[mask & d['交易類型'].isin(SALE_TYPES), '數量'].sum()
+        ret  = d.loc[mask & (d['交易類型'] == '銷退'), '數量'].abs().sum()
+        return int(sale - ret)
+
+    for j, row_name in enumerate(EDU_ROWS):
+        base = _edu_row_mask(d, row_name)
+        totals, edus = [], []
+        for w_start, w_end in weeks:
+            if w_start > week_end:
+                totals.append(None)
+                edus.append(None)
+                continue
+            in_week = ((d['單據日期'] >= pd.Timestamp(w_start)) &
+                       (d['單據日期'] <= pd.Timestamp(f'{min(w_end, week_end)} 23:59:59')))
+            totals.append(units(base & in_week))
+            edus.append(units(base & in_week & edu_all))
+        for col, (tot, edu) in enumerate(zip(totals, edus), start=2):
+            ws.cell(row=2 + j,  column=col).value = tot
+            ws.cell(row=8 + j,  column=col).value = edu
+            ws.cell(row=14 + j, column=col).value = (edu / tot) if tot else None
+        tot_sum = sum(v for v in totals if v)
+        edu_sum = sum(v for v in edus if v)
+        ws.cell(row=2 + j,  column=15).value = tot_sum
+        ws.cell(row=8 + j,  column=15).value = edu_sum
+        ws.cell(row=14 + j, column=15).value = (edu_sum / tot_sum) if tot_sum else None
+
+
+# ─── Sheet 6: 門市週報（fill_sheet2）────────────────────────────────────────────────────────
 def fill_sheet2(ws, df_cur, df_prev, sacare_prices, dates: dict, traffic=None, emp_count=None):
-    print('  Sheet 5: 門市週報', flush=True)
+    print('  Sheet 6: 門市週報', flush=True)
 
     def get(df, start, end):
         return calc_metrics(period(df, start, end), sacare_prices)
@@ -597,9 +665,9 @@ def fill_sheet2(ws, df_cur, df_prev, sacare_prices, dates: dict, traffic=None, e
         # N = M/L (去年同期差異%)
         ws.cell(row=r, column=14).value = safe_rate((F or 0) - (L or 0), L)
 
-# ─── Sheet 6: 3PP配件比較（fill_sheet3）──────────────────────────────────────────────────────
+# ─── Sheet 7: 3PP配件比較（fill_sheet3）──────────────────────────────────────────────────────
 def fill_sheet3(ws, df_cur, df_prev, sacare_prices, dates: dict):
-    print('  Sheet 6: 3PP配件比較', flush=True)
+    print('  Sheet 7: 3PP配件比較', flush=True)
     sa_codes = set(sacare_prices.keys())
 
     def c4_rev(df, start, end, c4_code):
@@ -674,9 +742,9 @@ def fill_sheet3(ws, df_cur, df_prev, sacare_prices, dates: dict):
     write_diff_cols(ws, 17)
     write_diff_cols(ws, 18)
 
-# ─── Sheet 7/8: 銷售排名（fill_sheet45）──────────────────────────────────────────────────────
+# ─── Sheet 8/9: 銷售排名（fill_sheet45）──────────────────────────────────────────────────────
 def fill_sheet45(ws4, ws5, df_cur, sacare_prices, dates: dict):
-    print('  Sheet 7/8: 銷售排名', flush=True)
+    print('  Sheet 8/9: 銷售排名', flush=True)
     sa_codes = set(sacare_prices.keys())
 
     def get_ranking(df, start, end, vap_only=False):
@@ -765,7 +833,7 @@ def calc_employee(df: pd.DataFrame, emp_code: str, sacare_prices: dict) -> dict:
     sa_ret_net  = (sa_ret['存貨代碼'].astype(str).str.strip().map(sacare_prices) * sa_ret['數量'].abs()).sum()
     sa_rev = int(sa_sold_net - sa_ret_net)
 
-    # Gross profit (Sheet 11 H/I 未稅毛利)
+    # Gross profit (Sheet 12 H/I 未稅毛利)
     # H 原廠毛利：依 ERP「13-門市獎金Apple毛利額未稅-員工」
     #   C3 白名單 {3001,3002,3032,3033,3046} + 99901689（抵用券兌換, C3=NaN）
     #   交易類型：包含 銷售/訂金/銷退，排除 尾款/退訂
@@ -904,9 +972,9 @@ def calc_employee(df: pd.DataFrame, emp_code: str, sacare_prices: dict) -> dict:
         vap_rev=vap_rev, office_qty=office_qty,
     )
 
-# ─── Sheet 11: 個人新制獎金（fill_sheet6）────────────────────────────────────────────────────
+# ─── Sheet 12: 個人新制獎金（fill_sheet6）────────────────────────────────────────────────────
 def fill_sheet6(ws, df_cur, sacare_prices, dates: dict):
-    print('  Sheet 11: 個人新制獎金', flush=True)
+    print('  Sheet 12: 個人新制獎金', flush=True)
     d_mo = period(df_cur, dates['mo_start'], dates['mo_end'])
     # 排除等級代碼 05（非全職／兼職員工，不納入獎金計算）
     if '等級代碼' in d_mo.columns:
@@ -942,9 +1010,9 @@ def fill_sheet6(ws, df_cur, sacare_prices, dates: dict):
         total = sum(ws.cell(row=r, column=col).value or 0 for r in emp_rows_6)
         ws.cell(row=total_row, column=col).value = total or None
 
-# ─── Sheet 12/13: 個人週/月主機（fill_sheet78）─────────────────────────────────────────────────
+# ─── Sheet 13/14: 個人週/月主機（fill_sheet78）─────────────────────────────────────────────────
 def fill_sheet78(ws7, ws8, df_cur, sacare_prices, dates: dict):
-    print('  Sheet 12/13: 個人週/月主機', flush=True)
+    print('  Sheet 13/14: 個人週/月主機', flush=True)
     d_wk = period(df_cur, dates['wk_start'], dates['wk_end'])
     d_mo = period(df_cur, dates['mo_start'], dates['mo_end'])
 
@@ -1008,9 +1076,9 @@ def fill_sheet78(ws7, ws8, df_cur, sacare_prices, dates: dict):
     write_total_row(ws7)
     write_total_row(ws8)
 
-# ─── Sheet 14: 個人月3PP（fill_sheet9）───────────────────────────────────────────────────────
+# ─── Sheet 15: 個人月3PP（fill_sheet9）───────────────────────────────────────────────────────
 def fill_sheet9(ws, df_cur, sacare_prices, dates: dict):
-    print('  Sheet 14: 個人月3PP', flush=True)
+    print('  Sheet 15: 個人月3PP', flush=True)
     d_mo = period(df_cur, dates['mo_start'], dates['mo_end'])
 
     for i, (code, _) in enumerate(EMPLOYEES):
@@ -1033,7 +1101,7 @@ def fill_sheet9(ws, df_cur, sacare_prices, dates: dict):
         total = sum(ws.cell(row=r, column=col).value or 0 for r in emp_rows_9)
         ws.cell(row=total_row, column=col).value = total or None
 
-# ─── Sheet 2/3: 每月重點 / Speakers ───────────────────────────────────────────
+# ─── Sheet 3/4: 每月重點 / Speakers ───────────────────────────────────────────
 def _net_qty(d: pd.DataFrame, mask) -> int:
     """淨數量：銷售/尾款 正計、銷退 取絕對值扣回（同 calc_employee 的 net_units_* 慣例）。"""
     sale = d.loc[mask & d['交易類型'].isin(SALE_TYPES), '數量'].sum()
@@ -1055,8 +1123,8 @@ def _label_row(ws, label: str, start: int = 2):
     return None
 
 def fill_sheet_focus(ws, df_cur, dates: dict):
-    """第 2 頁 每月重點：C=週銷售數、D=月銷售數（品牌 MONTHLY_FOCUS_BRANDS 的淨數量）。"""
-    print('  Sheet 2: 每月重點', flush=True)
+    """第 3 頁 每月重點：C=週銷售數、D=月銷售數（品牌 MONTHLY_FOCUS_BRANDS 的淨數量）。"""
+    print('  Sheet 3: 每月重點', flush=True)
     d_wk = period(df_cur, dates['wk_start'], dates['wk_end'])
     d_mo = period(df_cur, dates['mo_start'], dates['mo_end'])
     total_row = _label_row(ws, 'Total') or (2 + len(EMPLOYEES))
@@ -1072,9 +1140,9 @@ def fill_sheet_focus(ws, df_cur, dates: dict):
         ws.cell(row=total_row, column=col).value = total or None
 
 def fill_sheet_speakers(ws, df_cur, dates: dict):
-    """第 3 頁 Speakers（3PP 藍牙喇叭 C3=3003 且 C4∈SPEAKERS_C4）：
+    """第 4 頁 Speakers（3PP 藍牙喇叭 C3=3003 且 C4∈SPEAKERS_C4）：
     C/D=本週銷售數/金額、E/F=月銷售數/金額，另加一格全店年累積金額。"""
-    print('  Sheet 3: Speakers', flush=True)
+    print('  Sheet 4: Speakers', flush=True)
     d_wk = period(df_cur, dates['wk_start'], dates['wk_end'])
     d_mo = period(df_cur, dates['mo_start'], dates['mo_end'])
     total_row = _label_row(ws, 'Total') or (2 + len(EMPLOYEES))
@@ -1092,7 +1160,7 @@ def fill_sheet_speakers(ws, df_cur, dates: dict):
         ws.cell(row=total_row, column=col).value = total or None
 
     # 年累積金額（全店，不限報表列出的員工）：今年 1/1 ～ 截止日。
-    # 截止日＝前端「年對年截止日」有填就用它（與第 15/16 頁同步），留空則用本月結束日。
+    # 截止日＝前端「年對年截止日」有填就用它（與第 16/17 頁同步），留空則用本月結束日。
     ytd_end = dates.get('ytd_end') or dates['mo_end']
     d_ytd = period(df_cur, date(ytd_end.year, 1, 1), ytd_end)
     ytd_row = _label_row(ws, '年累積金額', start=total_row + 1)
@@ -1100,7 +1168,7 @@ def fill_sheet_speakers(ws, df_cur, dates: dict):
         amt = int(d_ytd.loc[_speakers_mask(d_ytd), 'NET'].sum())
         ws.cell(row=ytd_row, column=2).value = amt or None
 
-# ─── Sheet 4: 門市人流（ShopperTrak 逐日來客數）─────────────────────────────
+# ─── Sheet 5: 門市人流（ShopperTrak 逐日來客數）─────────────────────────────
 def _traffic_sum(daily: dict, start: date, end: date) -> int:
     if not daily or end < start:
         return 0
@@ -1119,12 +1187,12 @@ def _traffic_week_row(daily: dict, start: date, end: date) -> list:
 
 
 def fill_sheet_traffic(ws, daily: dict, dates: dict):
-    """第 4 頁 門市人流：
+    """第 5 頁 門市人流：
     2~5 列＝上週／本週逐日（B=週日…H=週六）＋ TOTAL 與 WoW 差異人數／比例；
     7~8 列＝當年各月來客數與年度總計；
     11~12 列＝上月 vs 本月、去年同月 vs 本月、去年 vs 今年年度累積。
     daily＝{date: 來客數}；查不到（未設帳密／查詢失敗）時只寫標題、數值全部留空。"""
-    print('  Sheet 4: 門市人流', flush=True)
+    print('  Sheet 5: 門市人流', flush=True)
     wk_s, wk_e = dates['wk_start'], dates['wk_end']
     year = wk_s.year
 
@@ -1185,7 +1253,7 @@ def fill_sheet_traffic(ws, daily: dict, dates: dict):
         ws.cell(row=12, column=col).value = value if value else None
 
 
-# ─── Sheet 15/16 共用：YOY 累積區間 ───────────────────────────────────────────
+# ─── Sheet 16/17 共用：YOY 累積區間 ───────────────────────────────────────────
 def _yoy_periods(dates: dict) -> 'tuple[date, date, date, date]':
     """回傳 (今年起始, 今年截止, 去年起始, 去年截止)。
     截止日預設為本週末日；若 dates 內有 'yoy_end'（前端自訂年對年截止日）則優先採用。
@@ -1199,9 +1267,9 @@ def _yoy_periods(dates: dict) -> 'tuple[date, date, date, date]':
     return date(cur_year, 1, 1), end, date(prev_year, 1, 1), prv_e
 
 
-# ─── Sheet 15: 月報YOY（fill_sheet10）（年對年累積比較）────────────────────────────────────────
+# ─── Sheet 16: 月報YOY（fill_sheet10）（年對年累積比較）────────────────────────────────────────
 def fill_sheet10(ws, df_cur, df_prev, sacare_prices, dates: dict, traffic=None, emp_count=None):
-    print('  Sheet 15: 月報YOY', flush=True)
+    print('  Sheet 16: 月報YOY', flush=True)
     # 累積區間：今年 1/1～截止日、去年 1/1～去年同日（截止日預設週末，可由前端自訂）
     cur_s, cur_e, prv_s, prv_e = _yoy_periods(dates)
     cur = calc_metrics(period(df_cur,  cur_s, cur_e), sacare_prices)
@@ -1277,9 +1345,9 @@ def fill_sheet10(ws, df_cur, df_prev, sacare_prices, dates: dict, traffic=None, 
         write_yoy(32, t.get('prv') or 0, t.get('cur') or 0)
 
 
-# ─── Sheet 16: 3PP YOY（fill_sheet11）（各 3PP 類別年對年累積比較）─────────────────────────────
+# ─── Sheet 17: 3PP YOY（fill_sheet11）（各 3PP 類別年對年累積比較）─────────────────────────────
 def fill_sheet11(ws, df_cur, df_prev, sacare_prices, dates: dict):
-    print('  Sheet 16: 3PP YOY', flush=True)
+    print('  Sheet 17: 3PP YOY', flush=True)
     sa_codes = set(sacare_prices.keys())
 
     def c4_rev(df, start, end, c4_code):
@@ -1460,17 +1528,18 @@ def main():
     quarter_start = compute_quarter_start(wk_start, fiscal_year_start)
 
     fill_sheet1(wb['1.主機銷售台數'], df_cur, quarter_start, wk_end)
-    fill_sheet2(wb['5.門市週報'],   df_cur, df_prev, sacare_prices, dates)
-    fill_sheet_focus(wb['2.每月重點'], df_cur, dates)
-    fill_sheet_speakers(wb['3.Speakers'], df_cur, dates)
-    fill_sheet_traffic(wb['4.門市人流'], {}, dates)   # CLI 無 ShopperTrak 來源 → 只寫標題
-    fill_sheet3(wb['6.3PP配件比較'], df_cur, df_prev, sacare_prices, dates)
-    fill_sheet45(wb['7.3PP 銷售排名'], wb['8.VAP銷售排名'], df_cur, sacare_prices, dates)
-    fill_sheet6(wb['11.個人新制獎金'], df_cur, sacare_prices, dates)
-    fill_sheet78(wb['12.個人週主機'], wb['13.個人月主機'], df_cur, sacare_prices, dates)
-    fill_sheet9(wb['14.個人月3PP'], df_cur, sacare_prices, dates)
-    fill_sheet10(wb['15.月報YOY'], df_cur, df_prev, sacare_prices, dates)
-    fill_sheet11(wb['16.3PP YOY'], df_cur, df_prev, sacare_prices, dates)
+    fill_sheet_edu(wb['2.教育價'], df_cur, quarter_start, wk_end)
+    fill_sheet2(wb['6.門市週報'],   df_cur, df_prev, sacare_prices, dates)
+    fill_sheet_focus(wb['3.每月重點'], df_cur, dates)
+    fill_sheet_speakers(wb['4.Speakers'], df_cur, dates)
+    fill_sheet_traffic(wb['5.門市人流'], {}, dates)   # CLI 無 ShopperTrak 來源 → 只寫標題
+    fill_sheet3(wb['7.3PP配件比較'], df_cur, df_prev, sacare_prices, dates)
+    fill_sheet45(wb['8.3PP 銷售排名'], wb['9.VAP銷售排名'], df_cur, sacare_prices, dates)
+    fill_sheet6(wb['12.個人新制獎金'], df_cur, sacare_prices, dates)
+    fill_sheet78(wb['13.個人週主機'], wb['14.個人月主機'], df_cur, sacare_prices, dates)
+    fill_sheet9(wb['15.個人月3PP'], df_cur, sacare_prices, dates)
+    fill_sheet10(wb['16.月報YOY'], df_cur, df_prev, sacare_prices, dates)
+    fill_sheet11(wb['17.3PP YOY'], df_cur, df_prev, sacare_prices, dates)
 
     wb.save(output)
     print(f'\n✓ 完成: {output}')
