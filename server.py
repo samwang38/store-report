@@ -106,20 +106,21 @@ FALLBACK_STORES = {
 
 REPORT_SHEETS = [
     "1.主機銷售台數",
-    "2.門市週報 ",
-    "3.每月重點",
-    "4.Speakers",
-    "5.3PP配件比較",
-    "6.3PP 銷售排名",
-    "7.VAP銷售排名",
-    "8.搭售統計_週",
-    "9.搭售統計_月",
-    "10.個人新制獎金",
-    "11.個人週主機",
-    "12.個人月主機",
-    "13.個人月3PP",
-    "14.月報YOY",
-    "15.3PP YOY",
+    "2.每月重點",
+    "3.Speakers",
+    "4.門市人流",
+    "5.門市週報",
+    "6.3PP配件比較",
+    "7.3PP 銷售排名",
+    "8.VAP銷售排名",
+    "9.搭售統計_週",
+    "10.搭售統計_月",
+    "11.個人新制獎金",
+    "12.個人週主機",
+    "13.個人月主機",
+    "14.個人月3PP",
+    "15.月報YOY",
+    "16.3PP YOY",
 ]
 
 
@@ -470,7 +471,7 @@ def load_sacare_cached():
 
 def load_epb_data(shop_id, dates, quarter_start):
     sacare_prices = load_sacare_cached()
-    # 納入 Sheet 14/15 年對年區間（截止日可由前端自訂，可能晚於週結束日）
+    # 納入 Sheet 15/16 年對年區間（截止日可由前端自訂，可能晚於週結束日）
     yoy_cur_s, yoy_cur_e, yoy_prv_s, yoy_prv_e = engine._yoy_periods(dates)
     # df_cur 涵蓋上週/本週/本月/上月，df_prev 涵蓋去年同期；納入自訂覆寫區間邊界以確保資料齊全
     cur_start = min(dates["ytd_cur_start"], dates["prev_wk_start"], dates["wk_start"],
@@ -548,16 +549,51 @@ def load_traffic(shop_id, dates, log=lambda m: None):
         return {}, {}
 
 
-# ─── DSS 搭售統計（Sheet 8/9）─────────────────────────────────────────
-# Sheet 8「搭售統計_週」：本期＝本週（週日～週六），歷史 3 列＝前 3 個完整週（W{財務季週次}）
-# Sheet 9「搭售統計_月」：本期比照其他月報表 compute_periods() 的 mo_start~mo_end
+def load_traffic_daily(shop_id, dates, log=lambda m: None):
+    """第 4 頁「門市人流」用的逐日來客數 {date: 人數}。
+
+    失敗（未裝套件／未設帳密／無 siteId／查詢錯誤）→ 回 {}，該頁留空、其餘照常產生。
+    區間：今年 1/1~本週結束日、去年 1/1~去年同日；若上週或上月落在去年（1 月的報表）
+    再補抓一段。年度累積固定算到本週結束日，不跟隨前端「年對年截止日」。
+    """
+    if traffic_mod is None or not traffic_mod.has_credentials():
+        return {}
+    if not traffic_mod.site_id_for_shop(shop_id):
+        return {}
+
+    wk_end = dates["wk_end"]
+    year = dates["wk_start"].year
+    # _yoy_periods 不帶 yoy_end → 去年同日（含 2/29 夾擠）
+    _, _, prv_start, prv_end = engine._yoy_periods({"wk_end": wk_end})
+    ranges = [
+        (date(year, 1, 1), wk_end),
+        (prv_start, max(prv_end, dates["ly_end"])),
+    ]
+    back_start = min(dates["prev_wk_start"], dates["lm_start"])
+    if back_start < date(year, 1, 1):
+        ranges.append((back_start, date(year, 1, 1) - timedelta(days=1)))
+
+    try:
+        daily = {}
+        for start, end in ranges:
+            daily.update(traffic_mod.get_traffic_daily(shop_id, start, end, log=log))
+        log(f"  人流逐日：{len(daily)} 天（{ranges[0][0]}~{wk_end} 等 {len(ranges)} 段）")
+        return daily
+    except Exception as exc:
+        log(f"  人流逐日查詢失敗，已略過：{exc}")
+        return {}
+
+
+# ─── DSS 搭售統計（Sheet 9/10）─────────────────────────────────────────
+# Sheet 9「搭售統計_週」：本期＝本週（週日～週六），歷史 3 列＝前 3 個完整週（W{財務季週次}）
+# Sheet 10「搭售統計_月」：本期比照其他月報表 compute_periods() 的 mo_start~mo_end
 #   （跨月週取 wk_start 那個月的整月，同月週則取 1 日～週結束日），歷史 3 列＝前 3 個完整日曆月（{n}月）
 # 定義（2026-06 與 DSS「3PP搭售率報表(人)」逐格核對確認）：
 #   m=搭售台數（有搭配件的主機）、s=配件數、ms=零搭售台數
 #   搭售率=s/m、零搭售比例=ms/(m+ms)、AA 3PP搭售率=Σs/Σm
 
-BUNDLE_SHEET_WEEK = "8.搭售統計_週"
-BUNDLE_SHEET_MONTH = "9.搭售統計_月"
+BUNDLE_SHEET_WEEK = "9.搭售統計_週"
+BUNDLE_SHEET_MONTH = "10.搭售統計_月"
 # 各機種欄位起點（B/G/L/Q/V），每組 5 欄：台數、配件、搭售率、零搭售、零搭售比例
 BUNDLE_GROUP_COLS = (("cpu", 2), ("iphone", 7), ("ipad", 12),
                      ("watch", 17), ("airpods", 22))
@@ -569,8 +605,8 @@ def load_bundle_stats(shop_id, wk_start, wk_end, mo_start, mo_end, fiscal_start,
 
     local_config.json 可設 "bundleSource": "dss" 強制改回 DSS 為主。
     EPB 演算法與 DSS 經 5 週 155 數據點驗證（154 吻合，唯一差異為 DSS 端漏單）。
-    失敗回 None → 略過 Sheet 8/9。mo_start/mo_end 直接沿用 compute_periods() 算好的
-    「本月」區間，與 Sheet 10/12/13/14 等其他月報表口徑一致（含進階自訂區間覆寫）。
+    失敗回 None → 略過 Sheet 9/10。mo_start/mo_end 直接沿用 compute_periods() 算好的
+    「本月」區間，與 Sheet 11/13/14/15 等其他月報表口徑一致（含進階自訂區間覆寫）。
     """
     periods = {("w", 0): (wk_start, wk_end)}
     for i in (1, 2, 3):
@@ -620,7 +656,7 @@ def load_bundle_stats(shop_id, wk_start, wk_end, mo_start, mo_end, fiscal_start,
         except Exception as exc:
             log(f"  搭售統計 {source.upper()} 查詢失敗：{exc}")
     if results is None:
-        log("  ✗ 搭售統計無法取得，略過 Sheet 8/9"
+        log("  ✗ 搭售統計無法取得，略過 Sheet 9/10"
             + ("（強制 DSS 模式：請先登入 DSS 或取消強制）" if forced_dss else ""))
         return None
 
@@ -951,7 +987,7 @@ def employees_from_sales(df, start_date, end_date, template_employees):
 
 def resolve_report_employees(df_cur, dates, template_employees):
     # 員工列依「整月」有無交易判定：第 10/12/13 頁皆為整月，本週沒業績但整月
-    # 有業績的員工（如月初有單、本週掛零）也要列出；第 11 頁(本週)對這些人顯示零，
+    # 有業績的員工（如月初有單、本週掛零）也要列出；第 12 頁(本週)對這些人顯示零，
     # 之後 filter_employees_by_report_numbers 再把整月全空者剔除。
     employees = employees_from_sales(df_cur, dates["mo_start"], dates["mo_end"], template_employees)
     return employees or []
@@ -1072,12 +1108,12 @@ def rebuild_two_col_employee_sheet(ws, employees, total_label="Total"):
 
 
 def rebuild_employee_report_sheets(wb, employees, template_employee_count):
-    rebuild_two_col_employee_sheet(wb["3.每月重點"], employees)
-    rebuild_two_col_employee_sheet(wb["4.Speakers"], employees)
-    rebuild_employee_sheet(wb["10.個人新制獎金"], employees, start_row=2, template_employee_count=template_employee_count)
-    rebuild_employee_sheet(wb["11.個人週主機"], employees, start_row=3, template_employee_count=template_employee_count)
-    rebuild_employee_sheet(wb["12.個人月主機"], employees, start_row=3, template_employee_count=template_employee_count)
-    rebuild_employee_sheet(wb["13.個人月3PP"], employees, start_row=2, template_employee_count=template_employee_count)
+    rebuild_two_col_employee_sheet(wb["2.每月重點"], employees)
+    rebuild_two_col_employee_sheet(wb["3.Speakers"], employees)
+    rebuild_employee_sheet(wb["11.個人新制獎金"], employees, start_row=2, template_employee_count=template_employee_count)
+    rebuild_employee_sheet(wb["12.個人週主機"], employees, start_row=3, template_employee_count=template_employee_count)
+    rebuild_employee_sheet(wb["13.個人月主機"], employees, start_row=3, template_employee_count=template_employee_count)
+    rebuild_employee_sheet(wb["14.個人月3PP"], employees, start_row=2, template_employee_count=template_employee_count)
 
 
 def cell_has_sales_number(value):
@@ -1093,10 +1129,10 @@ def row_has_report_numbers(ws, row):
 
 def employee_has_report_numbers(wb, employee_index):
     checks = [
-        ("10.個人新制獎金", 2),
-        ("11.個人週主機", 3),
-        ("12.個人月主機", 3),
-        ("13.個人月3PP", 2),
+        ("11.個人新制獎金", 2),
+        ("12.個人週主機", 3),
+        ("13.個人月主機", 3),
+        ("14.個人月3PP", 2),
     ]
     for sheet_name, start_row in checks:
         if row_has_report_numbers(wb[sheet_name], start_row + employee_index):
@@ -1113,7 +1149,7 @@ def filter_employees_by_report_numbers(wb, employees):
 
 
 def finalize_known_formulas(wb):
-    ws = wb["10.個人新制獎金"]
+    ws = wb["11.個人新制獎金"]
     for row in range(2, ws.max_row + 1):
         b = ws.cell(row=row, column=2).value or 0
         c = ws.cell(row=row, column=3).value or 0
@@ -1126,7 +1162,7 @@ def finalize_known_formulas(wb):
         ws.cell(row=row, column=11).value = (h or 0) + (i or 0) + (ws.cell(row=row, column=10).value or 0)
 
 
-# ─── 第 10 頁 B/C/D/H/I 直接取 ERP BI 原始值 ──────────────────────────────
+# ─── 第 11 頁 B/C/D/H/I 直接取 ERP BI 原始值 ──────────────────────────────
 # 來源：EPB「已儲存 BI 查詢」(BIQUERY)。改用 ERP 報表原公式直接打底層 view，
 # 取代引擎以 poslinev_bi 明細近似重算（2026-06 與 Sam 逐欄核對「完全正確」）。
 #   B 總業績      ← S_週報_員工個人總業績      (SHOPPOSB / POSLINEV_BI)
@@ -1135,7 +1171,7 @@ def finalize_known_formulas(wb):
 #   H Apple毛利   ← 13-門市獎金Apple毛利額未稅-員工 (BISHOP / BIPOS_VIEW)
 #   I 3PP毛利     ← 14-門市獎金3PP毛利額未稅-員工  (BISHOP / BIPOS_VIEW)
 # B/C/D = SUM(LINE_TOTAL_NET + LINE_TAX)（含稅）；H/I = 收入÷1.05 − 成本（未稅）。
-# 期間用第 10 頁原本的本月區間 mo_start~mo_end。E 欄(SA Care)與 F/G/J/K 公式不動。
+# 期間用第 11 頁原本的本月區間 mo_start~mo_end。E 欄(SA Care)與 F/G/J/K 公式不動。
 
 # D 原廠總業績排除碼
 _BI_D_STK_EXCL = ("'99200168','99500006','99900946','99900947','99900948','99900949',"
@@ -1225,7 +1261,7 @@ group by emp_id
 
 
 def override_sheet8_with_bi(ws, bi):
-    """用 ERP BI 原始值覆寫第 10 頁 B/C/D/H/I 欄與「加總」列。
+    """用 ERP BI 原始值覆寫第 11 頁 B/C/D/H/I 欄與「加總」列。
     員工列順序、加總列掃描方式與 engine.fill_sheet6 一致。"""
     col_map = {"b": 2, "c": 3, "d": 4, "h": 8, "i": 9}
     employees = engine.EMPLOYEES
@@ -1250,13 +1286,13 @@ def override_sheet8_with_bi(ws, bi):
 
 
 def fill_employee_report_sheets(wb, df_cur, sacare_prices, dates, sheet8_bi=None):
-    engine.fill_sheet_focus(wb["3.每月重點"], df_cur, dates)
-    engine.fill_sheet_speakers(wb["4.Speakers"], df_cur, dates)
-    engine.fill_sheet6(wb["10.個人新制獎金"], df_cur, sacare_prices, dates)
+    engine.fill_sheet_focus(wb["2.每月重點"], df_cur, dates)
+    engine.fill_sheet_speakers(wb["3.Speakers"], df_cur, dates)
+    engine.fill_sheet6(wb["11.個人新制獎金"], df_cur, sacare_prices, dates)
     if sheet8_bi is not None:
-        override_sheet8_with_bi(wb["10.個人新制獎金"], sheet8_bi)
-    engine.fill_sheet78(wb["11.個人週主機"], wb["12.個人月主機"], df_cur, sacare_prices, dates)
-    engine.fill_sheet9(wb["13.個人月3PP"], df_cur, sacare_prices, dates)
+        override_sheet8_with_bi(wb["11.個人新制獎金"], sheet8_bi)
+    engine.fill_sheet78(wb["12.個人週主機"], wb["13.個人月主機"], df_cur, sacare_prices, dates)
+    engine.fill_sheet9(wb["14.個人月3PP"], df_cur, sacare_prices, dates)
     finalize_known_formulas(wb)
 
 
@@ -1283,10 +1319,10 @@ def build_report_workbook(payload, log=lambda m: None):
     log(f"門市 {shop_id}　本週 {wk_start} ~ {wk_end}")
     dates = compute_periods(wk_start, wk_end)
     apply_period_overrides(dates, overrides, log=log)
-    # 年對年截止日（Sheet 14/15）：前端可自訂，留空則沿用本週結束日
+    # 年對年截止日（Sheet 15/16）：前端可自訂，留空則沿用本週結束日
     yoy_end = parse_date(payload.get("yoyEnd"), wk_end)
     dates["yoy_end"] = yoy_end
-    # 第 4 頁 Speakers 年累積截止日：年對年截止日有填就跟著它，留空則用本月結束日。
+    # 第 3 頁 Speakers 年累積截止日：年對年截止日有填就跟著它，留空則用本月結束日。
     # （yoy_end 本身留空時會預設成週結束日，所以要看 payload 有沒有真的填。）
     dates["ytd_end"] = yoy_end if payload.get("yoyEnd") else dates["mo_end"]
     if yoy_end != wk_end:
@@ -1306,6 +1342,7 @@ def build_report_workbook(payload, log=lambda m: None):
     if emp_count:
         log(f"編制人數：{emp_count} 人（人均產值 = 營業額 / 編制人數）")
     traffic2, traffic10 = load_traffic(shop_id, dates, log=log)
+    traffic_daily = load_traffic_daily(shop_id, dates, log=log)
 
     log("解析員工清單、重建個人 sheet…")
     employees = resolve_report_employees(df_cur, dates, template_employees)
@@ -1314,27 +1351,28 @@ def build_report_workbook(payload, log=lambda m: None):
     rebuild_employee_report_sheets(wb, employees, template_employee_count)
     log(f"  本月有交易員工 {len(employees)} 人")
 
-    log("填入 1-2、5-7 報表…")
+    log("填入 1、4-8 報表…")
     engine.fill_sheet1(wb["1.主機銷售台數"], df_cur, quarter_start, wk_end)
-    engine.fill_sheet2(wb["2.門市週報 "], df_cur, df_prev, sacare_prices, dates,
+    engine.fill_sheet_traffic(wb["4.門市人流"], traffic_daily, dates)
+    engine.fill_sheet2(wb["5.門市週報"], df_cur, df_prev, sacare_prices, dates,
                        traffic=traffic2, emp_count=emp_count)
-    engine.fill_sheet3(wb["5.3PP配件比較"], df_cur, df_prev, sacare_prices, dates)
-    engine.fill_sheet45(wb["6.3PP 銷售排名"], wb["7.VAP銷售排名"], df_cur, sacare_prices, dates)
+    engine.fill_sheet3(wb["6.3PP配件比較"], df_cur, df_prev, sacare_prices, dates)
+    engine.fill_sheet45(wb["7.3PP 銷售排名"], wb["8.VAP銷售排名"], df_cur, sacare_prices, dates)
 
-    log("填入 14-15 年對年報表…")
-    engine.fill_sheet10(wb["14.月報YOY"], df_cur, df_prev, sacare_prices, dates,
+    log("填入 15-16 年對年報表…")
+    engine.fill_sheet10(wb["15.月報YOY"], df_cur, df_prev, sacare_prices, dates,
                         traffic=traffic10, emp_count=emp_count)
-    engine.fill_sheet11(wb["15.3PP YOY"], df_cur, df_prev, sacare_prices, dates)
+    engine.fill_sheet11(wb["16.3PP YOY"], df_cur, df_prev, sacare_prices, dates)
 
-    log("查詢第 10 頁 ERP BI（總業績/3PP/原廠/Apple毛利/3PP毛利）…")
+    log("查詢第 11 頁 ERP BI（總業績/3PP/原廠/Apple毛利/3PP毛利）…")
     try:
         sheet8_bi = epb_sheet8_bi(shop_id, dates["mo_start"], dates["mo_end"])
         log(f"  取得 {len(sheet8_bi)} 位員工 BI 數據（本月 {dates['mo_start']}~{dates['mo_end']}）")
     except Exception as exc:  # BI 查詢失敗時退回引擎計算值，報表照常產生
         sheet8_bi = None
-        log(f"  ⚠ ERP BI 查詢失敗，第 10 頁 B/C/D/H/I 暫用引擎計算值：{exc}")
+        log(f"  ⚠ ERP BI 查詢失敗，第 11 頁 B/C/D/H/I 暫用引擎計算值：{exc}")
 
-    log("填入 3-4、10-13 個人報表…")
+    log("填入 2-3、11-14 個人報表…")
     fill_employee_report_sheets(wb, df_cur, sacare_prices, dates, sheet8_bi=sheet8_bi)
 
     active_employees = filter_employees_by_report_numbers(wb, employees)
@@ -1348,10 +1386,10 @@ def build_report_workbook(payload, log=lambda m: None):
 
     bundle = load_bundle_stats(shop_id, wk_start, wk_end, dates["mo_start"], dates["mo_end"], fiscal_start, log=log)
     if bundle:
-        log("填入 8-9 搭售統計…")
+        log("填入 9-10 搭售統計…")
         fill_bundle_sheets(wb, bundle, employees, log=log)
     else:
-        log("未填入搭售統計，清空 8-9 模板預設值…")
+        log("未填入搭售統計，清空 9-10 模板預設值…")
         clear_bundle_sheets(wb)
 
     source_meta["employeeCount"] = len(employees)
@@ -1361,8 +1399,8 @@ def build_report_workbook(payload, log=lambda m: None):
     if "設定" in wb.sheetnames:
         del wb["設定"]
 
-    # 修正 9/10 頁：引擎 fill_sheet78 從第 3 列起寫資料，第 2 列恆為空白 → 移除該空列
-    for sheet_name in ("11.個人週主機", "12.個人月主機"):
+    # 修正 12/13 頁：引擎 fill_sheet78 從第 3 列起寫資料，第 2 列恆為空白 → 移除該空列
+    for sheet_name in ("12.個人週主機", "13.個人月主機"):
         ws_fix = wb[sheet_name]
         if all(ws_fix.cell(row=2, column=c).value in (None, "") for c in range(1, ws_fix.max_column + 1)):
             ws_fix.delete_rows(2, 1)

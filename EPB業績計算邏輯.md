@@ -63,7 +63,7 @@ EPB 原始欄位 → 標準中文欄位 DataFrame（與 800AB 匯出格式一致
 
 ---
 
-## 3. 門市層級 KPI（`calc_metrics`，Sheet 2/10 使用）
+## 3. 門市層級 KPI（`calc_metrics`，Sheet 5/15 使用）
 
 輸入：已用 `period(df, start, end)` 過濾日期的標準 DataFrame + SAcare 價目。
 
@@ -82,9 +82,9 @@ EPB 原始欄位 → 標準中文欄位 DataFrame（與 800AB 匯出格式一致
 | 來客數 | ShopperTrak（外部 API，非 EPB） |
 | 人均產值 | 總營業額 ÷ 編制人數（前端輸入，存 local_config.json） |
 
-附加率慣例（Sheet 2/7/8）：SAcare 附加率 = SA 件數 ÷ 該機種台數；ACPP 附加率同理。
+附加率慣例（Sheet 5/12/13）：SAcare 附加率 = SA 件數 ÷ 該機種台數；ACPP 附加率同理。
 
-## 4. 個人層級 KPI（`calc_employee`，Sheet 6-9 使用）
+## 4. 個人層級 KPI（`calc_employee`，Sheet 11-14 使用）
 
 以 `員工代碼`（emp_id1）過濾後計算。與門市層級不同的重點：
 
@@ -108,7 +108,7 @@ EPB 原始欄位 → 標準中文欄位 DataFrame（與 800AB 匯出格式一致
 ### 其他個人指標
 - 個人台數/ACPP/SAcare 件數：與門市層級同邏輯，ACPP 依品名關鍵字分機種（mac/ipad/iphone/watch/airpods）
 - 3PP 配件分類營收：C3=3003 依 C4 分（4007=CPU週邊、4009=iPhone週邊、4012=CPU/iOS通用、4022=iOS通用、4039=Watch、4069=AirPods…完整對照見引擎 `C4_ROWS`）
-- 獎金計算（Sheet 6 公式）：F=SA營收/(SA+D欄)、G=3PP/原廠比、J=SA毛利=E÷2÷1.05、K=H+I+J
+- 獎金計算（Sheet 11 公式）：F=SA營收/(SA+D欄)、G=3PP/原廠比、J=SA毛利=E÷2÷1.05、K=H+I+J
 
 ## 5. 期間與會計週期慣例
 
@@ -116,7 +116,7 @@ EPB 原始欄位 → 標準中文欄位 DataFrame（與 800AB 匯出格式一致
 - **會計年度**：52 週（4 季 × 13 週），起始日讀模板「設定」sheet D2；季起始 = 年起 + 季序×13 週。Sheet 1 顯示當季 13 週逐週台數。
 - **本月**：若週跨月則取整個報表月；否則 1 日~週結束日。
 - **上月/去年同期**：同日期範圍對齊，月底日數不足取 `min(day, 當月天數)`（自動處理 2/29）。
-- **YOY（Sheet 10/11）**：1/1 累積至截止日（可自訂 `yoyEnd`），對比前一年同日。
+- **YOY（Sheet 15/16）**：1/1 累積至截止日（可自訂 `yoyEnd`），對比前一年同日。
 
 ---
 
@@ -155,7 +155,7 @@ headers, rows = server.run_remote("select shop_id, name from pos_shop where org_
 
 ### 方式 B：HTTP API（非 Python 或不想 import）
 啟動 `python3 server.py`（埠 8783）後：
-- `POST /api/generate` `{"shopId":"004","weekEnd":"YYYY-MM-DD"}` → 輪詢 `/api/status` → `/api/download` 拿 11-sheet Excel
+- `POST /api/generate` `{"shopId":"004","weekEnd":"YYYY-MM-DD"}` → 輪詢 `/api/status` → `/api/download` 拿 16-sheet Excel
 - 適合只要成品報表、或從 Shortcuts/排程腳本觸發的場景。
 
 ### 不建議
@@ -163,7 +163,7 @@ headers, rows = server.run_remote("select shop_id, name from pos_shop where org_
 
 ---
 
-## 附錄：DSS 搭售統計邏輯（Sheet 6/7，2026-06 反推驗證）
+## 附錄：DSS 搭售統計邏輯（Sheet 9/10，2026-06 反推驗證）
 
 來源系統：DSS 決策支援系統（dss.studioa.com.tw:8443）「3PP搭售率報表(人)」（rptId=3PP_aggregate_E）。
 以下規則由「3PP搭售明細」（rptId=3PP_incentive）231 列逐列反推，並以 EPB poslinev_bi
@@ -199,9 +199,9 @@ headers, rows = server.run_remote("select shop_id, name from pos_shop where org_
 - 零搭售比例 = 零搭售 ÷（搭售＋零搭售）
 - AA「3PP搭售率」= Σ配件 ÷ Σ搭售台數（五類合計）
 
-### 區間定義（週報模板 Sheet 6/7）
-- Sheet 6（週）：本期＝本週日～週六；歷史 3 列＝前 3 個完整週，標籤 W{財務季週次}
-- Sheet 7（月）：本期＝本月 1 日～週結束日；歷史 3 列＝前 3 個完整日曆月
+### 區間定義（週報模板 Sheet 9/10）
+- Sheet 9（週）：本期＝本週日～週六；歷史 3 列＝前 3 個完整週，標籤 W{財務季週次}
+- Sheet 10（月）：本期＝本月 1 日～週結束日；歷史 3 列＝前 3 個完整日曆月
 - 比對工具：`GET /api/bundle/preview?shopId=004&start=…&end=…&source=epb|dss|both`
 - 報表填寫目前以 DSS 為準（EPB 版為驗證用；規則僅以一週樣本驗證，跨週期穩定性待觀察）
 

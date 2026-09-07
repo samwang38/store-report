@@ -311,8 +311,8 @@ def _fetch_traffic_rows(site_id, start_date, end_date, token, tenant):
     return res
 
 
-def get_traffic_total(shop_id, start_date, end_date, log=lambda m: None):
-    """回傳 [start_date, end_date]（含端點）區間的來客總數（int）。
+def _traffic_rows(shop_id, start_date, end_date, log=lambda m: None):
+    """取回 [start_date, end_date]（含端點）的逐日 traffic 原始列。
 
     失敗時丟出 RuntimeError；由呼叫端決定是否略過。
     """
@@ -320,7 +320,7 @@ def get_traffic_total(shop_id, start_date, end_date, log=lambda m: None):
     if not site_id:
         raise RuntimeError(f"門市 {shop_id} 無對應 ShopperTrak siteId")
     if end_date < start_date:
-        return 0
+        return []
 
     token, tenant = _get_auth(log=log)
     res = _fetch_traffic_rows(site_id, start_date, end_date, token, tenant)
@@ -334,4 +334,25 @@ def get_traffic_total(shop_id, start_date, end_date, log=lambda m: None):
     rows = (((res.json() or {}).get("result") or [{}])[0].get("currentPeriod") or {}).get("data")
     if not isinstance(rows, list):
         raise RuntimeError("來客數回應格式異常")
+    return rows
+
+
+def get_traffic_total(shop_id, start_date, end_date, log=lambda m: None):
+    """回傳 [start_date, end_date]（含端點）區間的來客總數（int）。"""
+    rows = _traffic_rows(shop_id, start_date, end_date, log=log)
     return int(sum(float(r.get("traffic") or 0) for r in rows))
+
+
+def get_traffic_daily(shop_id, start_date, end_date, log=lambda m: None):
+    """回傳 {date: 來客數} 逐日對照（API 已以 day 分組，欄位為 'day'）。"""
+    daily = {}
+    for r in _traffic_rows(shop_id, start_date, end_date, log=log):
+        day = str(r.get("day") or "")[:10]
+        if not day:
+            continue
+        try:
+            d = date.fromisoformat(day)
+        except ValueError:
+            continue
+        daily[d] = daily.get(d, 0) + int(float(r.get("traffic") or 0))
+    return daily
