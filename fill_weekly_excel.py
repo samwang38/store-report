@@ -11,7 +11,7 @@ Usage:
 """
 from __future__ import annotations
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 
 import argparse, glob, shutil, sys
 from datetime import date, timedelta
@@ -489,11 +489,14 @@ def fill_sheet1(ws, df_cur: pd.DataFrame, quarter_start: date, week_end: date):
             ws.cell(row=excel_row, column=wi).value = v or None    # W01-W13
         ws.cell(row=excel_row, column=16).value = total or None    # Total
 
-# ─── Sheet 2: 教育價（促銷活動名稱含「教育價」）───────────────────────────────
-# 教育價交易＝ERP「促銷活動名稱」(POSLINEV_BI.MC_ID → POS_MC_CODE.MC_NAME) 含「教育價」，
-# 涵蓋 教育價活動／電腦單機教育價／iPad單機教育價／教育價ARpedia活動／ACC 教育價／教育價DG活動。
+# ─── Sheet 2: 教育價 ─────────────────────────────────────────────────────────
+# 教育價交易＝下列兩條件的聯集（兩種登錄方式都會漏，所以取聯集）：
+#   1. 同一張單據裡有存貨代碼 99500274「教育證號」（銷退單也會帶，故退貨能正常扣回）
+#   2. ERP「促銷活動名稱」(POSLINEV_BI.MC_ID → POS_MC_CODE.MC_NAME) 含「教育價」
+#      涵蓋 教育價活動／電腦單機教育價／iPad單機教育價／教育價ARpedia活動／ACC 教育價／教育價DG活動
 # Keyboard 與 Pencil 只算 Apple 原廠（C3=3002 且 C4=4010）；Pencil 排除「筆尖」耗材。
 EDU_KEYWORD = '教育價'
+EDU_CERT_SKU = '99500274'   # 教育證號（單據上的存代，非商品）
 EDU_ROWS = ['CPU', 'iPad', 'Watch', 'Pencil', 'Keyboard']
 
 
@@ -521,10 +524,18 @@ def fill_sheet_edu(ws, df_cur: pd.DataFrame, quarter_start: date, week_end: date
     欄：B~N＝W1…W13、O＝總計。台數口徑同第 1 頁（銷售＋尾款正計、銷退扣回）。"""
     print('  Sheet 2: 教育價', flush=True)
     d = df_cur
+    none_mask = pd.Series(False, index=d.index)
+    # ① 同單有「教育證號」；② 促銷活動名稱含「教育價」
+    # （CLI 讀 Excel 的路徑沒有單據代碼／促銷活動名稱這兩欄 → 該條件視為不成立）
+    doc = d.get('單據代碼')
+    if doc is not None:
+        sku = d['存貨代碼'].astype(str).str.strip()
+        by_cert = doc.isin(set(doc[sku == EDU_CERT_SKU]))
+    else:
+        by_cert = none_mask
     promo = d.get('促銷活動名稱')
-    # CLI 讀 Excel 的路徑沒有促銷活動名稱 → 教育價一律 0，總台數照算
-    edu_all = promo.fillna('').str.contains(EDU_KEYWORD, na=False) if promo is not None \
-        else pd.Series(False, index=d.index)
+    by_promo = promo.fillna('').str.contains(EDU_KEYWORD, na=False) if promo is not None else none_mask
+    edu_all = by_cert | by_promo
 
     weeks = [(quarter_start + timedelta(weeks=i),
               quarter_start + timedelta(weeks=i, days=6)) for i in range(13)]
