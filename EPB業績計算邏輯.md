@@ -69,20 +69,26 @@ EPB 原始欄位 → 標準中文欄位 DataFrame（與 800AB 匯出格式一致
 
 | KPI | 公式 |
 |---|---|
-| 總營業額 total_rev | 全部非 SA 列的 NET 合計（含禮券/雜項折抵）＋ SAcare 營業額 |
-| 分類營收 rev_3001/3002/3003 | 非 SA、該 C3 的 NET 合計 |
-| Apple 毛利 apl_gross | C3∈{3001,3002,3032,3033}、排除（SA 品項、品牌297、C6=31、C1=21、**尾款列**）：Σ NET − round(單位成本×1.05)×數量。排除尾款是因尾款列 NET=0 但記錄完整成本，會造成假性負毛利 |
-| 3PP 毛利 tpp_gross | 同上公式，C3=3003 |
-| 總毛利 | apl_gross + tpp_gross + sa_gross（SA 毛利=SA 營收÷2） |
+| 零售營業額(a) retail_rev | 非 SA、交易類型∈{銷售,銷退} 的 NET（不含訂金/退訂/尾款） |
+| 訂單出貨金額(b) order_ship | 尾款列的 `LINE_TOTAL_AFTDISC`（標準欄「折後金額」；尾款 NET=0，出貨金額在這欄） |
+| 零售訂金營業額(c) deposit_rev | 非 SA、交易類型∈{訂金,退訂} 的 NET |
+| 總營業額 total_rev | a + c + SAcare 營業額(e)（專案 d＝0；尾款 NET 不計）；當日零售營業收入＝a+b |
+| 分類營收 rev_3001/3002/3003 | 非 SA、該 C3 的 NET 合計（含所有交易類型） |
+| ACPP 營業額 acpp_rev | 非 SA、C3=3032 的 NET；3PP/ACPP/SA 搭售率分母都是總營業額 |
+| Apple/3PP/ACPP 毛利（Sheet 6/16） | **直接重現 ERP BI「02-日報 Apple 毛利額 含稅」「03-日報 3PP 毛利額 含稅」**（`server.epb_store_gross_bi`，BIPOS_VIEW）：round(Σqty×unit_price) − round(Σqty×unit_cost×1.05)，含尾款、排除訂金/退訂(G/I/J/K)、cat6∉(6888,6889)、cat1∉(1002,1004,1008)、brand≠297、class_id≠05；Apple＝cat3∉(3047,3003,3004,3018,3019,3006) 且扣掉 3032、ACPP＝其中 3032 部分、3PP＝cat3∈(3003,3004,3018,3019,3006)，排除碼見 `_BI_DAILY_*_STK_EXCL`。BI 失敗時退回引擎近似值（C3∈{3001,3002,3033} / 3003 / 3032，排尾款：Σ NET − round(單位成本×1.05)×數量） |
+| 總毛利 | Apple + 3PP + ACPP + SA（SA 毛利=SA 營收÷2） |
 | 台數（Mac） | C6 判定（C6_MACBOOK / mini=6002 / iMac=6001），銷售+尾款 − 銷退 |
 | 台數（iPhone/iPad/Watch） | C4 判定 +（C3=3001 或認證機品牌），銷售+尾款 − 銷退 |
-| ACPP-MAC | C3=3032 且名稱含 "mac"，銷售+尾款數量 |
+| AirPods 台數 | C3=3002（或認證機）且 C6∈C6_AIRPODS，銷售+尾款 − 銷退 |
+| ACPP-MAC/iPad/iPhone/Watch/AirPods 套數 | C3=3032 且名稱含 mac/ipad/iphone/watch/airpods，銷售+尾款 − 銷退 |
 | SAcare 各機種件數 | C6_SA 判定 + SA 存貨代碼，銷售+尾款 − 銷退 |
 | 成交筆數 txn_count | 銷售單據集合 − 銷退單據集合 |
 | 來客數 | ShopperTrak（外部 API，非 EPB） |
 | 人均產值 | 總營業額 ÷ 編制人數（前端輸入，存 local_config.json） |
 
-附加率慣例（Sheet 6/13/14）：SAcare 附加率 = SA 件數 ÷ 該機種台數；ACPP 附加率同理。
+附加率慣例：Sheet 6/16「保固加總 X 搭售率」＝(ACPP 套數＋SA 套數) ÷ 該機種台數；Sheet 13/14 同理。
+
+新機種上市時：AirPods 要把新 C6 加進 `C6_AIRPODS`；Mac 加進 `C6_CPU`；第 1 頁要在模板插列並更新 `PRODUCT_ROWS`/`SUBTOTAL_ROWS`（iPhone/iPad/Watch 其他頁用 C4，不必改）。2026-09：iPhone 18 Pro=6345、18 Pro Max=6346、AirPods 5=6348、Watch S12=6349、Ultra 4=6350。
 
 ## 4. 個人層級 KPI（`calc_employee`，Sheet 12-15 使用）
 

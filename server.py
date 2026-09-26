@@ -163,6 +163,7 @@ STANDARD_COLUMNS = [
     "等級代碼",
     "淨銷售金額(未稅)",
     "促銷活動名稱",
+    "折後金額",
 ]
 
 
@@ -396,6 +397,8 @@ def standardize_remote_records(records):
                 "等級代碼": "",
                 "淨銷售金額(未稅)": line_total_net,
                 "促銷活動名稱": text(rec.get("MC_NAME")),
+                # 尾款列 NET=0，實際出貨金額在 LINE_TOTAL_AFTDISC（第 6 頁「訂單出貨金額(b)」）
+                "折後金額": number(rec.get("LINE_TOTAL_AFTDISC")),
             }
         )
     if not rows:
@@ -436,6 +439,7 @@ select
   l.line_total_net,
   l.line_tax,
   l.line_total,
+  l.line_total_aftdisc,
   l.cost_price,
   l.trn_cost_price,
   l.brand_id,
@@ -1191,6 +1195,65 @@ _BI_I_STK_EXCL = ("'99903303','99903302','99200168','99500006','99900946','99900
                   "'99900949','99900950','99901684','99901685','99902607','99902608','99902609',"
                   "'99902610','99903343','99903339'")
 
+# 日報 BI「02-日報 Apple 毛利額 含稅」「03-日報 3PP 毛利額 含稅」的排除碼（與報表 13/14 不同：無 99903302/99903303）
+_BI_DAILY_APL_STK_EXCL = ("'07307154','07309136','07309137','07310037','07310042',"
+                          "'07310053','07310093','07311242','88600895','88601027','90501795','90501799',"
+                          "'99200168','99500006','99900946','99900947','99900948','99900949','99900950',"
+                          "'99901684','99901685','99902607','99902608','99902609','99902610','99903343','99903339'")
+_BI_DAILY_TPP_STK_EXCL = ("'99200168','99500006','99900946','99900947','99900948',"
+                          "'99900949','99900950','99901684','99901685','99902607','99902608','99902609',"
+                          "'99902610','99903343','99903339'")
+
+
+def epb_store_gross_bi(shop_id, ranges):
+    """第 6/16 頁門市毛利，重現 ERP BI「02-日報 Apple 毛利額 含稅」「03-日報 3PP 毛利額 含稅」（BIPOS_VIEW）。
+    ranges：{label: (start, end)}，回傳 {label: {'apl_gross','tpp_gross','acpp_gross'}}（int）。
+    毛利 = round(sum(收入 qty*unit_price)) − round(sum(qty*unit_cost)*1.05)，含尾款、排除訂金/退訂(G/I/J/K)；
+    日報把 ACPP(C3=3032) 算在 Apple 毛利內，新格式另列 → Apple 扣掉 3032、ACPP 單獨加總。
+    一次 SOAP：各區間用 case 條件式加總。"""
+    shop = quote_sql(shop_id)
+    items = list(ranges.items())
+    common = """(cat6_id not in ('6888','6889') or cat6_id is null)
+  and (cat1_id not in ('1002','1004','1008') or cat1_id is null)
+  and (trans_type not in ('G','J') or trans_type is null)
+  and brand_id not in ('297')
+  and (class_id not in ('05') or class_id is null)"""
+    apl = (f"(cat3_id not in ('3047','3003','3004','3018','3019','3006') or cat3_id is null)"
+           f" and stk_id not in ({_BI_DAILY_APL_STK_EXCL})")
+    masks = {
+        "apl_gross": f"{apl} and (cat3_id <> '3032' or cat3_id is null)",
+        "acpp_gross": f"{apl} and cat3_id = '3032'",
+        "tpp_gross": f"cat3_id in ('3003','3004','3018','3019','3006') and stk_id not in ({_BI_DAILY_TPP_STK_EXCL})",
+    }
+
+    def in_range(s, e):
+        return (f"doc_date >= to_date({quote_sql(s.isoformat())}, 'yyyy-mm-dd')"
+                f" and doc_date < to_date({quote_sql((e + timedelta(days=1)).isoformat())}, 'yyyy-mm-dd')")
+
+    cols, keys = [], []
+    for i, (label, (s, e)) in enumerate(items):
+        for key, mask in masks.items():
+            cond = f"{in_range(s, e)} and {mask}"
+            cols.append(f"round(sum(case when {cond} then "
+                        f"decode(trans_type,'G',0,'I',0,'J',0,'K',0, qty*unit_price) else 0 end), 0)"
+                        f" - round(sum(case when {cond} then "
+                        f"decode(trans_type,'G',0,'I',0,'J',0,'K',0, qty*unit_cost) else 0 end)*1.05, 0) as g{len(cols)}")
+            keys.append((label, key))
+    where_dates = " or ".join(f"({in_range(s, e)})" for _, (s, e) in items)
+    sql = f"""
+select {", ".join(cols)}
+from bipos_view
+where org_id = {quote_sql(ORG_ID)} and loc_id = {shop}
+  and ({where_dates})
+  and {common}
+"""
+    headers, rows = run_remote(sql, timeout=180)
+    row = (rows[0] if rows else []) + [""] * len(keys)
+    result = {label: {} for label, _ in items}
+    for (label, key), val in zip(keys, row):
+        result[label][key] = int(round(number(val)))
+    return result
+
 
 def epb_sheet8_bi(shop_id, start, end):
     """回傳 {emp_code: {'b','c','d','h','i'}}，值為 ERP BI 原始輸出（int）。
@@ -1356,18 +1419,36 @@ def build_report_workbook(payload, log=lambda m: None):
     rebuild_employee_report_sheets(wb, employees, template_employee_count)
     log(f"  本月有交易員工 {len(employees)} 人")
 
+    log("查詢第 6/16 頁門市毛利 ERP BI（02/03-日報 毛利額 含稅）…")
+    yoy_cur_s, yoy_cur_e, yoy_prv_s, yoy_prv_e = engine._yoy_periods(dates)
+    try:
+        store_gross = epb_store_gross_bi(shop_id, {
+            "上週": (dates["prev_wk_start"], dates["prev_wk_end"]),
+            "本週": (dates["wk_start"], dates["wk_end"]),
+            "本月": (dates["mo_start"], dates["mo_end"]),
+            "上月": (dates["lm_start"], dates["lm_end"]),
+            "去年": (dates["ly_start"], dates["ly_end"]),
+            "cur": (yoy_cur_s, yoy_cur_e),
+            "prv": (yoy_prv_s, yoy_prv_e),
+        })
+    except Exception as exc:  # BI 查詢失敗時退回引擎計算值，報表照常產生
+        store_gross = None
+        log(f"  ⚠ 門市毛利 BI 查詢失敗，第 6/16 頁毛利暫用引擎計算值：{exc}")
+
     log("填入 1-2、5-9 報表…")
     engine.fill_sheet1(wb["1.主機銷售台數"], df_cur, quarter_start, wk_end)
     engine.fill_sheet_edu(wb["2.教育價"], df_cur, quarter_start, wk_end)
     engine.fill_sheet_traffic(wb["5.門市人流"], traffic_daily, dates)
     engine.fill_sheet2(wb["6.門市週報"], df_cur, df_prev, sacare_prices, dates,
-                       traffic=traffic2, emp_count=emp_count)
+                       traffic=traffic2, emp_count=emp_count,
+                       gross_bi={k: store_gross.get(k) for k in ("上週", "本週", "本月", "上月", "去年")} if store_gross else None)
     engine.fill_sheet3(wb["7.3PP配件比較"], df_cur, df_prev, sacare_prices, dates)
     engine.fill_sheet45(wb["8.3PP 銷售排名"], wb["9.VAP銷售排名"], df_cur, sacare_prices, dates)
 
     log("填入 16-17 年對年報表…")
     engine.fill_sheet10(wb["16.月報YOY"], df_cur, df_prev, sacare_prices, dates,
-                        traffic=traffic10, emp_count=emp_count)
+                        traffic=traffic10, emp_count=emp_count,
+                        gross_bi={"cur": store_gross.get("cur"), "prv": store_gross.get("prv")} if store_gross else None)
     engine.fill_sheet11(wb["17.3PP YOY"], df_cur, df_prev, sacare_prices, dates)
 
     log("查詢第 12 頁 ERP BI（總業績/3PP/原廠/Apple毛利/3PP毛利）…")
