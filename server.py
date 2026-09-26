@@ -103,6 +103,8 @@ FALLBACK_STORES = {
     "057": "羅東門市",
     "068": "新店裕隆城",
 }
+# 門市下拉只開放這幾間（士林、新店裕隆城）
+SELECTABLE_STORES = ("004", "068")
 
 REPORT_SHEETS = [
     "1.主機銷售台數",
@@ -964,7 +966,7 @@ def list_stores():
     # 補上後備清單中 EPB 未回傳的門市（如新門市 068），EPB 名稱優先
     for sid, name in FALLBACK_STORES.items():
         by_id.setdefault(sid, name)
-    items = [{"storeId": sid, "name": by_id[sid]} for sid in sorted(by_id)]
+    items = [{"storeId": sid, "name": by_id[sid]} for sid in SELECTABLE_STORES if sid in by_id]
     return {"items": items, "default": DEFAULT_SHOP_ID}
 
 
