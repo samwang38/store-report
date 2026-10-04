@@ -75,8 +75,10 @@ EPB 原始欄位 → 標準中文欄位 DataFrame（與 800AB 匯出格式一致
 | 總營業額 total_rev | a + c + SAcare 營業額(e)（專案 d＝0；尾款 NET 不計）；當日零售營業收入＝a+b |
 | 分類營收 rev_3001/3002/3003 | 非 SA、該 C3 的 NET 合計（含所有交易類型） |
 | ACPP 營業額 acpp_rev | 非 SA、C3=3032 的 NET；3PP/ACPP/SA 搭售率分母都是總營業額 |
+| 保固（AC+SA） | 營業額 warranty_rev＝ACPP 營業額＋SA Care 營業額；毛利 warranty_gross＝ACPP 毛利＋SA 毛利；各機種套數＝ACPP 套數＋SA 套數；保固搭售率分母＝總營業額 |
+| 舊換新台數 tradein | C3=3020 且名稱開頭「舊換新」的銷退列台數（回收舊機以銷退入帳，同單另有「(正數)舊換新…折抵金額」銷售列） |
 | Apple/3PP/ACPP 毛利（Sheet 6/16） | **直接重現 ERP BI「02-日報 Apple 毛利額 含稅」「03-日報 3PP 毛利額 含稅」**（`server.epb_store_gross_bi`，BIPOS_VIEW）：round(Σqty×unit_price) − round(Σqty×unit_cost×1.05)，含尾款、排除訂金/退訂(G/I/J/K)、cat6∉(6888,6889)、cat1∉(1002,1004,1008)、brand≠297、class_id≠05；Apple＝cat3∉(3047,3003,3004,3018,3019,3006) 且扣掉 3032、ACPP＝其中 3032 部分、3PP＝cat3∈(3003,3004,3018,3019,3006)，排除碼見 `_BI_DAILY_*_STK_EXCL`。BI 失敗時退回引擎近似值（C3∈{3001,3002,3033} / 3003 / 3032，排尾款：Σ NET − round(單位成本×1.05)×數量） |
-| 總毛利 | Apple + 3PP + ACPP + SA（SA 毛利=SA 營收÷2） |
+| 總毛利 | Apple + 3PP + 保固（ACPP + SA；SA 毛利=SA 營收÷2） |
 | 台數（Mac） | C6 判定（C6_MACBOOK / mini=6002 / iMac=6001），銷售+尾款 − 銷退 |
 | 台數（iPhone/iPad/Watch） | C4 判定 +（C3=3001 或認證機品牌），銷售+尾款 − 銷退 |
 | AirPods 台數 | C3=3002（或認證機）且 C6∈C6_AIRPODS，銷售+尾款 − 銷退 |
@@ -84,7 +86,7 @@ EPB 原始欄位 → 標準中文欄位 DataFrame（與 800AB 匯出格式一致
 | SAcare 各機種件數 | C6_SA 判定 + SA 存貨代碼，銷售+尾款 − 銷退 |
 | 成交筆數 txn_count | 銷售單據集合 − 銷退單據集合 |
 | 來客數 | ShopperTrak（外部 API，非 EPB） |
-| 人均產值 | 總營業額 ÷ 編制人數（前端輸入，存 local_config.json） |
+| 人均產值 | 零售營業額(a) ÷ 編制人數（前端輸入，存 local_config.json；日報口徑） |
 
 附加率慣例：Sheet 6/16「保固加總 X 搭售率」＝(ACPP 套數＋SA 套數) ÷ 該機種台數；Sheet 13/14 同理。
 

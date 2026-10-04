@@ -432,12 +432,16 @@ def calc_metrics(d: pd.DataFrame, sacare_prices: dict) -> dict:
     sa_watch   = sa_units(C6_SA['watch'])
     sa_airpods = sa_units(C6_SA['airpods'])
 
+    # 舊換新台數：回收舊機以 C3=3020「舊換新-機型」銷退列入帳（同單另有正數折抵列），數銷退列台數
+    tradein = int(d.loc[(d['類別3代碼'] == 3020.0) & (d['交易類型'] == '銷退') &
+                        d['名稱'].astype(str).str.startswith('舊換新'), '數量'].abs().sum())
+
     # 成交筆數 (excluding 正負沖銷)
     sale_codes = set(d.loc[d['交易類型'] == '銷售', '單據代碼'].dropna().astype(str))
     ret_codes  = set(d.loc[d['交易類型'] == '銷退',  '單據代碼'].dropna().astype(str))
     txn_count  = len(sale_codes - ret_codes)
 
-    return dict(
+    m = dict(
         rev_3001=int(rev_3001), rev_3002=int(rev_3002), rev_3003=int(rev_3003),
         sa_rev=int(sa_rev), sa_gross=int(sa_gross),
         total_rev=int(total_rev),
@@ -452,8 +456,16 @@ def calc_metrics(d: pd.DataFrame, sacare_prices: dict) -> dict:
         acpp_watch=acpp_cnt('watch'), acpp_airpods=acpp_cnt('airpods'),
         sa_cpu=sa_cpu, sa_ipad=sa_ipad, sa_iphone=sa_iphone,
         sa_watch=sa_watch, sa_airpods=sa_airpods,
-        txn_count=txn_count,
+        txn_count=txn_count, tradein=tradein,
     )
+    # 保固（AC+SA）＝ ACPP + SA Care：營業額與各機種套數
+    m['warranty_rev'] = m['acpp_rev'] + m['sa_rev']
+    for dev, ac, sa_k in (('cpu', 'acpp_mac', 'sa_cpu'), ('ipad', 'acpp_ipad', 'sa_ipad'),
+                          ('iphone', 'acpp_iphone', 'sa_iphone'), ('watch', 'acpp_watch', 'sa_watch'),
+                          ('airpods', 'acpp_airpods', 'sa_airpods')):
+        m[f'warranty_{dev}'] = m[ac] + m[sa_k]
+    m['warranty_gross'] = m['acpp_gross'] + m['sa_gross']
+    return m
 
 # ─── Sheet 1: 主機銷售台數 ─────────────────────────────────────────────────────
 def fill_sheet1(ws, df_cur: pd.DataFrame, quarter_start: date, week_end: date):
@@ -594,53 +606,47 @@ def fill_sheet_edu(ws, df_cur: pd.DataFrame, quarter_start: date, week_end: date
         ws.cell(row=14 + j, column=15).value = (edu_sum / tot_sum) if tot_sum else None
 
 
-# ─── Sheet 6 / 16 共用列定義（2026-09 起改公司日報格式）──────────────────────────────
+# ─── Sheet 6 / 16 共用列定義（2026-10 公司日報格式）──────────────────────────────
 # row -> (列名, 值)；值：str＝指標 key、(num, den)＝比率（num 可為 key 的 tuple＝加總）、None＝留空
 # per_capita（人均產值）/ visitors（來客數）不在 calc_metrics，由填表時補進指標 dict
+# 保固（AC+SA）＝ ACPP + SA Care
 STORE_KPI_ROWS = {
-    2:  ('總營業額(a + c + d + e)', 'total_rev'),
-    3:  ('零售營業額(a)',           'retail_rev'),
-    4:  ('訂單出貨金額(b)',         'order_ship'),
-    5:  ('當日零售營業收入(a + b)', 'retail_income'),
-    6:  ('零售訂金營業額(c)',       'deposit_rev'),
-    7:  ('專案營業額(d)',           None),
-    8:  ('Apple 主機營業額',        'rev_3001'),
-    9:  ('Apple 配件營業額',        'rev_3002'),
-    10: ('3PP配件營業額',           'rev_3003'),
-    11: ('3PP搭售率',               ('rev_3003', 'total_rev')),
-    12: ('ACPP 營業額',             'acpp_rev'),
-    13: ('ACPP 搭售率',             ('acpp_rev', 'total_rev')),
-    14: ('SA Care 營業額(e)',       'sa_rev'),
-    15: ('SA Care 搭售率',          ('sa_rev', 'total_rev')),
-    16: ('總毛利額',                'total_gross'),
-    17: ('Apple 毛利額',            'apl_gross'),
-    18: ('3PP 毛利額',              'tpp_gross'),
-    19: ('ACPP毛利額',              'acpp_gross'),
-    20: ('SA Care 毛利額',          'sa_gross'),
-    21: ('CPU 台數',                'cpu_total'),
-    22: ('ACPP-MAC 套數',           'acpp_mac'),
-    23: ('SA Care for CPU 套數',    'sa_cpu'),
-    24: ('保固加總 CPU 搭售率',     (('acpp_mac', 'sa_cpu'), 'cpu_total')),
-    25: ('iPad 台數',               'ipad'),
-    26: ('ACPP-iPad 套數',          'acpp_ipad'),
-    27: ('SA Care for iPad 套數',   'sa_ipad'),
-    28: ('保固加總 iPad 搭售率',    (('acpp_ipad', 'sa_ipad'), 'ipad')),
-    29: ('iPhone 台數',             'iphone'),
-    30: ('ACPP-iPhone 套數',        'acpp_iphone'),
-    31: ('SA Care for iPhone 套數', 'sa_iphone'),
-    32: ('保固加總 iPhone 搭售率',  (('acpp_iphone', 'sa_iphone'), 'iphone')),
-    33: ('Watch 台數',              'watch'),
-    34: ('ACPP-Watch 套數',         'acpp_watch'),
-    35: ('SA Care for Watch 套數',  'sa_watch'),
-    36: ('保固加總 Watch 搭售率',   (('acpp_watch', 'sa_watch'), 'watch')),
-    37: ('AirPods 台數',            'airpods'),
-    38: ('ACPP-AirPods 套數',       'acpp_airpods'),
-    39: ('SA Care for AirPods 套數', 'sa_airpods'),
-    40: ('保固加總 AirPods 搭售率', (('acpp_airpods', 'sa_airpods'), 'airpods')),
-    41: ('人均產值',                'per_capita'),
-    42: ('來客數',                  'visitors'),
-    43: ('成交筆數',                'txn_count'),
-    44: ('提袋率',                  ('txn_count', 'visitors')),
+    2:  ('總營業額(a + c + e)',      'total_rev'),
+    3:  ('零售營業額(a)',            'retail_rev'),
+    4:  ('訂單出貨金額(b)',          'order_ship'),
+    5:  ('當日零售營業收入(a + b)',  'retail_income'),
+    6:  ('零售訂金營業額(c)',        'deposit_rev'),
+    7:  ('零售專案營業額(d)',        None),
+    8:  ('Apple 主機營業額',         'rev_3001'),
+    9:  ('Apple 配件營業額',         'rev_3002'),
+    10: ('3PP配件營業額',            'rev_3003'),
+    11: ('3PP搭售率',                ('rev_3003', 'total_rev')),
+    12: ('保固營業額（AC+SA）',      'warranty_rev'),
+    13: ('保固搭售率（AC+SA）',      ('warranty_rev', 'total_rev')),
+    14: ('總毛利額',                 'total_gross'),
+    15: ('Apple 毛利額',             'apl_gross'),
+    16: ('3PP 毛利額',               'tpp_gross'),
+    17: ('保固毛利額（AC+SA）',      'warranty_gross'),
+    18: ('CPU 台數',                 'cpu_total'),
+    19: ('保固 for CPU 套數（AC+SA）', 'warranty_cpu'),
+    20: ('保固 for CPU 搭售率（AC+SA）', ('warranty_cpu', 'cpu_total')),
+    21: ('iPad 台數',                'ipad'),
+    22: ('保固 for iPad 套數（AC+SA）', 'warranty_ipad'),
+    23: ('保固加總 iPad 搭售率（AC+SA）', ('warranty_ipad', 'ipad')),
+    24: ('iPhone 台數',              'iphone'),
+    25: ('保固 for iPhone 套數（AC+SA）', 'warranty_iphone'),
+    26: ('保固加總 iPhone 搭售率（AC+SA）', ('warranty_iphone', 'iphone')),
+    27: ('Watch 台數',               'watch'),
+    28: ('保固 for Watch 套數（AC+SA）', 'warranty_watch'),
+    29: ('保固加總 Watch 搭售率（AC+SA）', ('warranty_watch', 'watch')),
+    30: ('AirPods 台數',             'airpods'),
+    31: ('保固 for AirPods 套數（AC+SA）', 'warranty_airpods'),
+    32: ('保固加總 AirPods 搭售率（AC+SA）', ('warranty_airpods', 'airpods')),
+    33: ('人均產值',                 'per_capita'),
+    34: ('來客數',                   'visitors'),
+    35: ('成交筆數',                 'txn_count'),
+    36: ('提袋率',                   ('txn_count', 'visitors')),
+    37: ('舊換新台數:',              'tradein'),
 }
 
 
@@ -662,6 +668,7 @@ def _apply_gross_bi(m: dict, bi: 'dict | None') -> dict:
     if bi:
         m.update({k: bi[k] for k in ('apl_gross', 'tpp_gross', 'acpp_gross') if k in bi})
         m['total_gross'] = m['apl_gross'] + m['tpp_gross'] + m['acpp_gross'] + m['sa_gross']
+        m['warranty_gross'] = m['acpp_gross'] + m['sa_gross']
     return m
 
 
@@ -685,9 +692,9 @@ def fill_sheet2(ws, df_cur, df_prev, sacare_prices, dates: dict, traffic=None, e
     }
     for col, m in data.items():
         _apply_gross_bi(m, (gross_bi or {}).get(col))
-        # 人均產值 = 總營業額 / 總員工數（編制人數，前端輸入）；來客數＝ShopperTrak 人流（查不到則留空）
+        # 人均產值 = 零售營業額(a) / 總員工數（編制人數，前端輸入）；來客數＝ShopperTrak 人流（查不到則留空）
         if emp_count:
-            m['per_capita'] = int(m.get('total_rev', 0) / emp_count)
+            m['per_capita'] = int(m.get('retail_rev', 0) / emp_count)
         visitors = (traffic or {}).get(col)
         if visitors is not None:
             m['visitors'] = int(visitors)
@@ -695,12 +702,12 @@ def fill_sheet2(ws, df_cur, df_prev, sacare_prices, dates: dict, traffic=None, e
     has_traffic = bool(traffic) and any(v is not None for v in traffic.values())
     active_rows = []
     for r, (_, spec) in STORE_KPI_ROWS.items():
-        if spec is None:                                   # 專案營業額(d) 留空
+        if spec is None:                                   # 零售專案營業額(d) 留空
             continue
         if spec == 'per_capita' and not emp_count:
             continue
-        if not has_traffic and r in (42, 44):              # 來客數、提袋率需有人流
-            continue
+        if not has_traffic and 'visitors' in (spec if isinstance(spec, tuple) else (spec,)):
+            continue                                       # 來客數、提袋率需有人流
         active_rows.append(r)
         is_pct = isinstance(spec, tuple)
         for col_name, col in cols.items():
@@ -1355,10 +1362,10 @@ def fill_sheet10(ws, df_cur, df_prev, sacare_prices, dates: dict, traffic=None, 
     cur = _apply_gross_bi(calc_metrics(period(df_cur,  cur_s, cur_e), sacare_prices), (gross_bi or {}).get('cur'))
     prv = _apply_gross_bi(calc_metrics(period(df_prev, prv_s, prv_e), sacare_prices), (gross_bi or {}).get('prv'))
 
-    # 人均產值（累積 = 累積總營業額 / 編制人數）、來客數（ShopperTrak）
+    # 人均產值（累積 = 累積零售營業額(a) / 編制人數）、來客數（ShopperTrak）
     if emp_count:
-        cur['per_capita'] = int(cur.get('total_rev', 0) / emp_count)
-        prv['per_capita'] = int(prv.get('total_rev', 0) / emp_count)
+        cur['per_capita'] = int(cur.get('retail_rev', 0) / emp_count)
+        prv['per_capita'] = int(prv.get('retail_rev', 0) / emp_count)
     t = traffic or {}
     if t.get('prv') is not None or t.get('cur') is not None:
         cur['visitors'] = int(t.get('cur') or 0)
