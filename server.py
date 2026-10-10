@@ -1468,13 +1468,14 @@ def build_report_workbook(payload, log=lambda m: None):
                         gross_bi={"cur": store_gross.get("cur"), "prv": store_gross.get("prv")} if store_gross else None)
     engine.fill_sheet11(wb["17.3PP YOY"], df_cur, df_prev, sacare_prices, dates)
 
-    log("填入 18-19 差異明細比較…")
+    log("填入 18-20 差異明細比較／3PP 熱門系列…")
     try:
         engine.C6_NAMES = load_c6_names()
     except Exception as exc:  # 名稱查不到不影響數字，列名改顯示代碼
         log(f"  ⚠ 類別 6 名稱查詢失敗，第 18 頁 3PP 細分列名改顯示代碼：{exc}")
     engine.fill_sheet_detail_products(wb, df_cur, df_prev, sacare_prices, dates)
     engine.fill_sheet_detail_ops(wb, df_cur, df_prev, sacare_prices, dates)
+    engine.fill_sheet_hot_series(wb, df_cur, sacare_prices, dates)
 
     log("查詢第 12 頁 ERP BI（總業績/3PP/原廠/Apple毛利/3PP毛利）…")
     try:

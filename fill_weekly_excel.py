@@ -13,7 +13,7 @@ from __future__ import annotations
 
 VERSION = "1.4.1"
 
-import argparse, glob, shutil, sys
+import argparse, glob, re, shutil, sys
 from datetime import date, timedelta
 from calendar import monthrange
 from pathlib import Path
@@ -1651,52 +1651,6 @@ def _model_units(d, c3, c6_set, must_inc, must_exc):
     return _net_units(d, mask)
 
 
-def _acc_items(d, sa_codes):
-    """Top 10 用：3PP＋原廠配件（排除 AirPods/HomePod、SA、贈品）各存貨代碼的 NET。"""
-    d = _non_sa(d, sa_codes)
-    d = d[d['類別3代碼'].isin([3002.0, 3003.0])]
-    d = d[~((d['類別3代碼'] == 3002.0) & _is_audio_device(d))]
-    is_return = d['交易類型'] == '銷退'
-    is_gift = (d['折扣'].fillna(0) >= 80) | ((d['NET'].abs() == 0) & ~is_return)
-    d = d[~is_gift]
-    return d.groupby('存貨代碼').agg(品名=('名稱', 'first'), rev=('NET', 'sum'))
-
-
-def _write_top_movers(ws, row, title, d_prev, d_cur, prev_lab, cur_lab, sa_codes, st):
-    a, b = _acc_items(d_prev, sa_codes), _acc_items(d_cur, sa_codes)
-    m = a.join(b, how='outer', lsuffix='_a', rsuffix='_b')
-    m['品名'] = m['品名_b'].fillna(m['品名_a'])
-    m['prev'] = m['rev_a'].fillna(0).astype(int)
-    m['cur'] = m['rev_b'].fillna(0).astype(int)
-    m['diff'] = m['cur'] - m['prev']
-    blocks = [('成長 Top 10', m[m['diff'] > 0].sort_values('diff', ascending=False).head(10)),
-              ('衰退 Top 10', m[m['diff'] < 0].sort_values('diff').head(10))]
-    for sub, top in blocks:
-        row = _write_section(ws, row, f'{title}｜{sub}', st)
-        heads = ['品名', '存貨代碼', prev_lab, cur_lab, '差異', '差異%']
-        for c, h in enumerate(heads, start=1):
-            cell = ws.cell(row=row, column=c)
-            cell.value, cell.font, cell.border, cell.alignment = h, st['bold'], st['border'], st['center']
-        row += 1
-        if top.empty:
-            ws.cell(row=row, column=1).value = '（無）'
-            ws.cell(row=row, column=1).font = st['font']
-            row += 1
-        for code, r in top.iterrows():
-            vals = [str(r['品名']), str(code), r['prev'] or None, r['cur'] or None, int(r['diff']),
-                    safe_rate(r['diff'], r['prev']) if r['prev'] else None]
-            fmts = [None, None, '#,##0', '#,##0', '[Color10]+#,##0;[Red]-#,##0;0',
-                    '[Color10]+0.0%;[Red]-0.0%;0.0%']
-            for c, (v, fmt) in enumerate(zip(vals, fmts), start=1):
-                cell = ws.cell(row=row, column=c)
-                cell.value, cell.font, cell.border = v, st['font'], st['border']
-                if fmt:
-                    cell.number_format = fmt
-            row += 1
-        row += 1
-    return row
-
-
 def fill_sheet_detail_products(wb, df_cur, df_prev, sacare_prices, dates: dict):
     print(f'  Sheet 18: {DETAIL_SHEET_PRODUCTS}', flush=True)
     sa_codes = set(sacare_prices.keys())
@@ -1794,10 +1748,6 @@ def fill_sheet_detail_products(wb, df_cur, df_prev, sacare_prices, dates: dict):
     row = _write_compare_row(ws, row, 'SA Care 營業額', [m['sa_rev'] for m in mets], st)
     row = _write_compare_row(ws, row, '保固營業額（AC+SA）', [m['warranty_rev'] for m in mets], st)
 
-    # 6. 成長／衰退 Top 10（3PP＋原廠配件單品）
-    row += 1
-    row = _write_top_movers(ws, row, '本週 vs 上週', frames[0], frames[1], '上週', '本週', sa_codes, st)
-    _write_top_movers(ws, row, '本月 vs 去年同月同期', frames[2], frames[3], '去年同期', '本月', sa_codes, st)
 
 
 def _doc_set(d, mask):
@@ -1877,6 +1827,120 @@ def fill_sheet_detail_ops(wb, df_cur, df_prev, sacare_prices, dates: dict):
     per_period = [_voucher_rows(f) for f in frames]
     for i, (label, _) in enumerate(per_period[0]):
         row = _write_compare_row(ws, row, label, [p[i][1] for p in per_period], st)
+
+
+# ─── Sheet 20：3PP 熱門系列（本週／本月，同款不同色合併）─────────────────────────
+# 取該期 3PP 營業額前 10 大的「類別 4＋類別 6」，每組依數量列前 5 個系列。
+# ERP 商品主檔沒有系列／顏色欄位，系列由品名去掉顏色字判定（同類別 4＋類別 6 內品名相同＝同系列）。
+HOT_SERIES_SHEET  = '20.3PP 熱門系列'
+HOT_SERIES_GROUPS = 10   # 每期展開的類別數
+HOT_SERIES_TOP    = 5    # 每類列出的系列數
+SERIES_COLOR_RE = re.compile(
+    '黑|白|紅|藍|綠|黃|紫|粉|灰|銀|金|棕|橙|橘|咖啡|透明|米|杏|卡其|奶茶|奶油|午夜|星光|太空|石墨|沙|鈦|'
+    '玫瑰|薰衣草|天空|森林|酒紅|勃根地|莎瓦納|朔月|炭|碳|曜石|珍珠|香檳|迷彩|褐|'
+    'white|black|blue|red|green|pink|grey|gray|silver|gold|purple|clear|navy|midnight|starlight|'
+    'beige|brown|orange|yellow|graphite|titanium', re.I)
+# 含這些字的不是顏色（例：「抗藍光」「晶透抗黃殻」「鋁合金支架」「(藍色吊挂繩)」）
+SERIES_NOT_COLOR_RE = re.compile(r'藍光|貼|殼|殻|膜|線|套|充|器|版|款|組|入|件|支架|扣|按鍵|繩|\d')
+
+
+def _series_name(name) -> str:
+    """去掉品名中的顏色（括號內顏色、結尾「-顏色」／「 顏色」），作為同款系列名。"""
+    n = re.sub(r'\s+', ' ', str(name).replace('\xa0', ' ')).strip().lstrip('@').strip()
+
+    def _paren(m):
+        t = m.group(1)
+        is_color = len(t) <= 6 and SERIES_COLOR_RE.search(t) and not SERIES_NOT_COLOR_RE.search(t)
+        return '' if is_color else m.group(0)
+
+    n = re.sub(r'[\(（]([^()（）]{1,8})[\)）]', _paren, n).strip()
+    base = n   # 結尾沒有顏色可去時，回傳這個（不留下補的空白）
+    # 只處理品名最後一段：「)黑色」→「) 黑色」、「1.2m銀」→「1.2m 銀」，好讓下面切出顏色
+    n = re.sub(r'([)）])(?=[^\s)）]{1,6}$)', r'\1 ', n)
+    n = re.sub(r'(\d(?:m|cm|mm|W))(?=[^\x00-\x7f][^\s]{0,5}$)', r'\1 ', n, flags=re.I)
+    stripped = False
+    for _ in range(3):   # 雙色「-黑/鈦」要連續去掉
+        m = re.match(r'^(.*?)(?:\s*[-－/]\s*|\s+)([^\s\-－/]{1,6})$', n)
+        if not (m and SERIES_COLOR_RE.search(m.group(2)) and not SERIES_NOT_COLOR_RE.search(m.group(2))):
+            break
+        n, stripped = m.group(1).strip(), True
+    return n if stripped else base
+
+
+def _c6_name(code) -> str:
+    if pd.isna(code):
+        return '未分類'
+    return C6_NAMES.get(float(code)) or f'類別6 {int(code)}'
+
+
+def _hot_series_block(ws, col0, title, d, c4_labels, st):
+    """在 col0 起的 5 欄寫入一期的熱門系列；回傳寫到的最後一列。"""
+    from openpyxl.styles import Alignment
+    heads = ['排名', '系列名稱', '色數', '數量', '營業額']
+    row = 1
+    ws.merge_cells(start_row=row, start_column=col0, end_row=row, end_column=col0 + 4)
+    ws.cell(row=row, column=col0).value = title
+    for c in range(col0, col0 + 5):
+        cell = ws.cell(row=row, column=c)
+        cell.font, cell.fill, cell.alignment, cell.border = st['head'], st['head_fill'], st['center'], st['border']
+    row += 1
+    for j, h in enumerate(heads):
+        cell = ws.cell(row=row, column=col0 + j)
+        cell.value, cell.font, cell.alignment, cell.border = h, st['bold'], st['center'], st['border']
+    row += 1
+
+    d = d.assign(_c6=d['類別6代碼'].fillna(-1))
+    group_rev = d.groupby(['類別4代碼', '_c6'])['NET'].sum().sort_values(ascending=False)
+    group_rev = group_rev[group_rev > 0].head(HOT_SERIES_GROUPS)
+    is_return = d['交易類型'] == '銷退'
+    is_gift = (d['折扣'].fillna(0) >= 80) | ((d['NET'].abs() == 0) & ~is_return)
+    items = d[~is_gift].assign(系列=lambda x: x['名稱'].map(_series_name))
+    left = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+    for (c4, c6), rev in group_rev.items():
+        g = items[(items['類別4代碼'] == c4) & (items['_c6'] == c6)]
+        label = f"{c4_labels.get(c4, f'類別4 {int(c4)}')}｜{_c6_name(None if c6 == -1 else c6)}"
+        qty_all = int(d.loc[(d['類別4代碼'] == c4) & (d['_c6'] == c6), '數量'].sum())
+        vals = ['', label, None, qty_all, int(rev)]
+        for j, v in enumerate(vals):
+            cell = ws.cell(row=row, column=col0 + j)
+            cell.value, cell.font, cell.fill, cell.border = v, st['bold'], st['sec_fill'], st['border']
+            if j >= 3:
+                cell.number_format = '#,##0'
+        row += 1
+        ser = g.groupby('系列').agg(色數=('存貨代碼', 'nunique'), qty=('數量', 'sum'), rev=('NET', 'sum'))
+        ser = ser[ser['qty'] > 0].sort_values(['qty', 'rev'], ascending=False).head(HOT_SERIES_TOP)
+        for rank, (name, r) in enumerate(ser.iterrows(), start=1):
+            vals = [rank, name, int(r['色數']), int(r['qty']), int(r['rev'])]
+            for j, v in enumerate(vals):
+                cell = ws.cell(row=row, column=col0 + j)
+                cell.value, cell.font, cell.border = v, st['font'], st['border']
+                cell.alignment = left if j == 1 else st['center']
+                if j >= 3:
+                    cell.number_format = '#,##0'
+            row += 1
+    return row
+
+
+def fill_sheet_hot_series(wb, df_cur, sacare_prices, dates: dict):
+    print(f'  Sheet 20: {HOT_SERIES_SHEET}', flush=True)
+    sa_codes = set(sacare_prices.keys())
+    ws = _reset_detail_sheet(wb, HOT_SERIES_SHEET)
+    ws.freeze_panes = 'A3'
+    for col, width in zip('ABCDEFGHIJK', (6, 48, 6, 8, 11, 3, 6, 48, 6, 8, 11)):
+        ws.column_dimensions[col].width = width
+    st = _detail_styles()
+    ws7 = wb['7.3PP配件比較'] if '7.3PP配件比較' in wb.sheetnames else None
+    c4_labels = {c4: str(ws7.cell(row=r, column=2).value).strip() for c4, r in C4_ROWS.items()} if ws7 else {}
+
+    def tpp(start, end):
+        d = _non_sa(period(df_cur, start, end), sa_codes)
+        return d[d['類別3代碼'] == 3003.0]
+
+    wk_title = f"本週 {dates['wk_start']:%m/%d}~{dates['wk_end']:%m/%d}（依數量，同款不同色合併）"
+    mo_title = f"本月 {dates['mo_start']:%m/%d}~{dates['mo_end']:%m/%d}（依數量，同款不同色合併）"
+    _hot_series_block(ws, 1, wk_title, tpp(dates['wk_start'], dates['wk_end']), c4_labels, st)
+    _hot_series_block(ws, 7, mo_title, tpp(dates['mo_start'], dates['mo_end']), c4_labels, st)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -2022,6 +2086,7 @@ def main():
     fill_sheet11(wb['17.3PP YOY'], df_cur, df_prev, sacare_prices, dates)
     fill_sheet_detail_products(wb, df_cur, df_prev, sacare_prices, dates)
     fill_sheet_detail_ops(wb, df_cur, df_prev, sacare_prices, dates)
+    fill_sheet_hot_series(wb, df_cur, sacare_prices, dates)
 
     wb.save(output)
     print(f'\n✓ 完成: {output}')
