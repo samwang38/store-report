@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""
+週報小幫手 Mac 端工作程式（launchd 每 60 秒呼叫一次，用 install_report_worker.sh 安裝）。
+
+做什麼（Pattern B：Mac 主動拉取，外部不連進公司網路）：
+  1) 向 Worker 拉待寄信件（綁定驗證碼等），用公司 SMTP 寄出並回報。
+  2) EPB 連得上才領產報工作：呼叫 server.build_report_excel 產出週報，
+     以附件寄給店長並回報結果；失敗時 Worker 會退回次數並推播店長，同時寄信通知 Sam。
+
+設定（local_config.json）：
+  "smtp":         由 smtp_test.py 測試成功後存入（host/port/username/password/from）
+  "reportWeekly": {"workerUrl": "...", "macSecret": "..."}
+
+手動測試（不經 Worker，直接產一份寄出）：
+  python3 report_worker.py --local 004 2026-10-10 收件人@studioa.com.tw [編制人數]
+"""
+import json
+import socket
+import sys
+import time
+import traceback
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import date, timedelta
+from email.message import EmailMessage
+from pathlib import Path
+
+from smtp_test import connect
+
+HERE = Path(__file__).resolve().parent
+MAX_JOBS_PER_RUN = 3
+
+
+def log(msg):
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+
+
+def load_cfg():
+    cfg = json.loads((HERE / "local_config.json").read_text("utf-8"))
+    if not cfg.get("smtp"):
+        raise SystemExit("local_config.json 沒有 smtp 設定，請先執行 smtp_test.py 並選擇存檔")
+    return cfg
+
+
+# ─── Worker API ───────────────────────────────────────────
+def worker(cfg, method, path, body=None):
+    rw = cfg["reportWeekly"]
+    req = urllib.request.Request(
+        rw["workerUrl"].rstrip("/") + path, method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"authorization": f"Bearer {rw['macSecret']}", "content-type": "application/json",
+                 "user-agent": "report-weekly-mac/1.0"})
+    with urllib.request.urlopen(req, timeout=30) as res:
+        return json.loads(res.read().decode())
+
+
+# ─── 寄信 ─────────────────────────────────────────────────
+def send_mail(cfg, to, subject, body, attachment=None):
+    s_cfg = cfg["smtp"]
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = s_cfg["from"]
+    msg["To"] = to
+    msg.set_content(body)
+    if attachment:
+        name, data = attachment
+        msg.add_attachment(data, maintype="application",
+                           subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=name)
+    s, _ = connect(s_cfg["host"], int(s_cfg["port"]), timeout=60)
+    try:
+        if s_cfg.get("username"):
+            s.login(s_cfg["username"], s_cfg["password"])
+        s.send_message(msg)
+    finally:
+        try:
+            s.quit()
+        except Exception:
+            pass
+
+
+def notify_sam(cfg, subject, body):
+    try:
+        send_mail(cfg, cfg["smtp"]["from"], f"【週報小幫手・系統通知】{subject}", body)
+    except Exception as e:
+        log(f"通知 Sam 失敗：{e}")
+
+
+# ─── 產報 ─────────────────────────────────────────────────
+def epb_reachable(timeout=3):
+    import server  # 只為了取得 EPB 位址；import 不會啟動 web server
+    u = urllib.parse.urlparse(server.EPB_WSDL_URL)
+    try:
+        with socket.create_connection((u.hostname, u.port or 80), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, to, manager_name=""):
+    import server
+    wk_end = date.fromisoformat(week_end)
+    wk_start = wk_end - timedelta(days=6)
+    payload = {"shopId": shop_id, "weekEnd": week_end, "weekStart": wk_start.isoformat(),
+               "employeeCount": employee_count}
+    if yoy_end:
+        payload["yoyEnd"] = yoy_end
+    t0 = time.time()
+    filename, body, _meta = server.build_report_excel(payload, log=lambda m: log(f"  {m}"))
+    span = f"{wk_start:%m/%d}–{wk_end:%m/%d}"
+    send_mail(cfg, to, f"【週報】{shop_name} {span}",
+              f"{manager_name or '店長'} 你好：\n\n附件是 {shop_name} {wk_start:%Y/%m/%d}（日）到 {wk_end:%Y/%m/%d}（六）的週報。\n"
+              "數字有疑問，直接在 LINE 告訴 Sam，確認後修正重寄不扣次。\n\n週日週報小幫手",
+              attachment=(filename, body))
+    log(f"  已寄出 {filename}（{len(body):,} bytes，{time.time() - t0:.0f} 秒）")
+
+
+# ─── 主流程 ───────────────────────────────────────────────
+def process_outbox(cfg):
+    items = worker(cfg, "GET", "/api/mac/outbox")["items"]
+    for it in items:
+        try:
+            send_mail(cfg, it["to_email"], it["subject"], it["body"])
+            worker(cfg, "POST", "/api/mac/outbox/result", {"id": it["id"], "ok": True})
+            log(f"已寄出 {it['kind']} 信 #{it['id']}")
+        except Exception as e:
+            worker(cfg, "POST", "/api/mac/outbox/result", {"id": it["id"], "ok": False, "error": str(e)})
+            log(f"寄信失敗 #{it['id']}：{e}")
+
+
+def process_jobs(cfg):
+    if not epb_reachable():
+        log("EPB 連不上（VPN／內網？），本輪不領產報工作")
+        return
+    for _ in range(MAX_JOBS_PER_RUN):
+        job = worker(cfg, "POST", "/api/mac/jobs/claim", {})["job"]
+        if not job:
+            return
+        log(f"領到工作 #{job['id']}：{job['shop_id']} {job['shop_name']} 週結束 {job['week_end']}")
+        try:
+            build_and_send(cfg, job["shop_id"], job["shop_name"], job["week_end"], job.get("yoy_end"),
+                           job.get("employee_count"), job["to_email"], job.get("manager_name", ""))
+            worker(cfg, "POST", "/api/mac/jobs/result", {"id": job["id"], "ok": True})
+        except Exception as e:
+            tb = traceback.format_exc()
+            log(f"工作 #{job['id']} 失敗：{e}")
+            worker(cfg, "POST", "/api/mac/jobs/result", {"id": job["id"], "ok": False, "error": f"{type(e).__name__}: {e}"})
+            notify_sam(cfg, f"產報失敗 {job['shop_name']} {job['week_end']}",
+                       f"工作 #{job['id']}，收件人 {job['to_email']}。已自動退回次數並通知店長。\n\n{tb}")
+
+
+def main():
+    cfg = load_cfg()
+    if len(sys.argv) >= 5 and sys.argv[1] == "--local":
+        shop_id, week_end, to = sys.argv[2], sys.argv[3], sys.argv[4]
+        emp = int(sys.argv[5]) if len(sys.argv) > 5 else None
+        build_and_send(cfg, shop_id, shop_id, week_end, None, emp, to)
+        return
+    try:
+        process_outbox(cfg)
+        process_jobs(cfg)
+    except urllib.error.URLError as e:
+        log(f"Worker 連線失敗：{e}")
+
+
+if __name__ == "__main__":
+    main()

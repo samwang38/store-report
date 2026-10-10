@@ -7,6 +7,14 @@
       "runtimeArgs": ["server.py"],
       "port": 8783,
       "autoPort": true
+    },
+    {
+      "name": "report-weekly-worker",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--yes", "wrangler@4", "dev", "--local", "--port", "8787",
+        "--config", "/Users/sa/Claude/code project/report-subscribe/wrangler.jsonc",
+        "--persist-to", "/Users/sa/Claude/code project/report-subscribe/.wrangler/state"],
+      "port": 8787
     }
   ]
 }

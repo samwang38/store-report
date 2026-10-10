@@ -8,3 +8,4 @@ output/
 local_config.json
 .epb_last_sync
 dss_login_debug.html
+local_config.backup-*.json
