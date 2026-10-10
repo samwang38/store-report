@@ -408,8 +408,9 @@ def calc_metrics(d: pd.DataFrame, sacare_prices: dict) -> dict:
     iphone_units = net_units_c4(C4_IPHONE)
     ipad_units   = net_units_c4(C4_IPAD)
     watch_units  = net_units_c4(C4_WATCH)
-    # AirPods：C3=3002（或認證機）且 C6∈C6_AIRPODS，同 calc_employee
-    ap_mask = ((d['類別3代碼'] == 3002.0) | d['品牌代碼'].isin(cert_brands)) & d['類別6代碼'].isin(C6_AIRPODS)
+    # AirPods：C3=3002（或認證機）且為 AirPods 主機；C6_AIRPODS 只含現行世代，
+    # 去年的舊款（如 AirPods Pro 2）由 _is_airpods 以品名補判，否則年對年台數/搭售率失真
+    ap_mask = ((d['類別3代碼'] == 3002.0) | d['品牌代碼'].isin(cert_brands)) & _is_airpods(d)
     airpods_units = int(d.loc[ap_mask & d['交易類型'].isin(SALE_TYPES), '數量'].sum() -
                         d.loc[ap_mask & (d['交易類型'] == '銷退'), '數量'].abs().sum())
 
