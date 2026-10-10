@@ -1543,7 +1543,7 @@ def _detail_styles():
     )
 
 
-def _reset_detail_sheet(wb, name):
+def _reset_detail_sheet(wb, name, freeze='B3'):
     """清掉舊的同名頁，在最後重新建立（模板沒有這兩頁）。"""
     if name in wb.sheetnames:
         del wb[name]
@@ -1551,7 +1551,7 @@ def _reset_detail_sheet(wb, name):
     ws.column_dimensions['A'].width = 40
     for col in range(2, 14):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 13
-    ws.freeze_panes = 'B3'
+    ws.freeze_panes = freeze   # 只能設一次：重設會留下重複的 selection，Excel 開檔會要求修復
     return ws
 
 
@@ -1926,8 +1926,7 @@ def _hot_series_block(ws, col0, title, d, c4_labels, st):
 def fill_sheet_hot_series(wb, df_cur, sacare_prices, dates: dict):
     print(f'  Sheet 20: {HOT_SERIES_SHEET}', flush=True)
     sa_codes = set(sacare_prices.keys())
-    ws = _reset_detail_sheet(wb, HOT_SERIES_SHEET)
-    ws.freeze_panes = 'A3'
+    ws = _reset_detail_sheet(wb, HOT_SERIES_SHEET, freeze='A3')
     for col, width in zip('ABCDEFGHIJK', (6, 48, 6, 8, 11, 3, 6, 48, 6, 8, 11)):
         ws.column_dimensions[col].width = width
     st = _detail_styles()
