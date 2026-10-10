@@ -3,6 +3,8 @@
 週報小幫手 Mac 端工作程式（launchd 每 60 秒呼叫一次，用 install_report_worker.sh 安裝）。
 
 做什麼（Pattern B：Mac 主動拉取，外部不連進公司網路）：
+  0) 自動更新：最多每 10 分鐘檢查 GitHub，有新版就 fast-forward 後以新版重新啟動；
+     本機有未 commit 的修改或分歧時不更新，改寄信通知 Sam（每天最多一次）。
   1) 向 Worker 拉待寄信件（綁定驗證碼等），用公司 SMTP 寄出並回報。
   2) EPB 連得上才領產報工作：呼叫 server.build_report_excel 產出週報，
      以附件寄給店長並回報結果；失敗時 Worker 會退回次數並推播店長，同時寄信通知 Sam。
@@ -15,7 +17,9 @@
   python3 report_worker.py --local 004 2026-10-10 收件人@studioa.com.tw [編制人數]
 """
 import json
+import os
 import socket
+import subprocess
 import sys
 import time
 import traceback
@@ -30,6 +34,9 @@ from smtp_test import connect
 
 HERE = Path(__file__).resolve().parent
 MAX_JOBS_PER_RUN = 3
+UPDATE_INTERVAL_SEC = 600
+UPDATE_STAMP = HERE / ".last_update_check"
+UPDATE_BLOCKED_STAMP = HERE / ".update_blocked_notified"
 
 
 def log(msg):
@@ -53,6 +60,69 @@ def worker(cfg, method, path, body=None):
                  "user-agent": "report-weekly-mac/1.0"})
     with urllib.request.urlopen(req, timeout=30) as res:
         return json.loads(res.read().decode())
+
+
+# ─── 自動更新 ─────────────────────────────────────────────
+def git(*args, timeout=60):
+    r = subprocess.run(["git", *args], cwd=HERE, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)}：{(r.stderr or r.stdout).strip()[:300]}")
+    return r.stdout.strip()
+
+
+def app_version():
+    try:
+        v = (HERE / "VERSION").read_text().strip()
+    except OSError:
+        v = "?"
+    try:
+        return f"{v} ({git('rev-parse', '--short', 'HEAD', timeout=10)})"
+    except Exception:
+        return v
+
+
+def _notify_update_blocked(cfg, reason):
+    today = time.strftime("%Y-%m-%d")
+    try:
+        if UPDATE_BLOCKED_STAMP.read_text().strip() == today:
+            return
+    except OSError:
+        pass
+    UPDATE_BLOCKED_STAMP.write_text(today)
+    notify_sam(cfg, "自動更新暫停", f"常開 Mac 上的週報工具沒有自動更新：{reason}\n\n"
+               f"目前版本：{app_version()}。請到那台 Mac 的工具資料夾處理後執行 git pull。")
+
+
+def maybe_update(cfg):
+    """有新版就更新並以新版重新啟動（os.execv），沒有就直接返回。"""
+    if not (HERE / ".git").exists():
+        return
+    try:
+        if time.time() - UPDATE_STAMP.stat().st_mtime < UPDATE_INTERVAL_SEC:
+            return
+    except OSError:
+        pass
+    UPDATE_STAMP.write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
+    try:
+        if git("status", "--porcelain", "--untracked-files=no"):
+            _notify_update_blocked(cfg, "這台 Mac 上的程式有未 commit 的修改。")
+            return
+        git("fetch", "--quiet", "origin", "main")
+        head, remote = git("rev-parse", "HEAD"), git("rev-parse", "origin/main")
+        if head == remote:
+            return
+        try:
+            git("merge-base", "--is-ancestor", "HEAD", "origin/main")
+        except RuntimeError:
+            _notify_update_blocked(cfg, "這台 Mac 的版本和 GitHub 分歧，無法直接更新。")
+            return
+        before = app_version()
+        git("merge", "--ff-only", "--quiet", "origin/main")
+        log(f"已自動更新：{before} → {app_version()}，以新版重新啟動")
+    except Exception as e:
+        log(f"自動更新檢查失敗（沿用目前版本）：{e}")
+        return
+    os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
 # ─── 寄信 ─────────────────────────────────────────────────
@@ -140,13 +210,15 @@ def process_jobs(cfg):
         try:
             build_and_send(cfg, job["shop_id"], job["shop_name"], job["week_end"], job.get("yoy_end"),
                            job.get("employee_count"), job["to_email"], job.get("manager_name", ""))
-            worker(cfg, "POST", "/api/mac/jobs/result", {"id": job["id"], "ok": True})
+            worker(cfg, "POST", "/api/mac/jobs/result", {"id": job["id"], "ok": True, "version": app_version()})
         except Exception as e:
             tb = traceback.format_exc()
             log(f"工作 #{job['id']} 失敗：{e}")
-            worker(cfg, "POST", "/api/mac/jobs/result", {"id": job["id"], "ok": False, "error": f"{type(e).__name__}: {e}"})
+            worker(cfg, "POST", "/api/mac/jobs/result",
+                   {"id": job["id"], "ok": False, "error": f"{type(e).__name__}: {e}", "version": app_version()})
             notify_sam(cfg, f"產報失敗 {job['shop_name']} {job['week_end']}",
-                       f"工作 #{job['id']}，收件人 {job['to_email']}。已自動退回次數並通知店長。\n\n{tb}")
+                       f"工作 #{job['id']}，收件人 {job['to_email']}，版本 {app_version()}。"
+                       f"已自動退回次數並通知店長。\n\n{tb}")
 
 
 def main():
@@ -156,6 +228,7 @@ def main():
         emp = int(sys.argv[5]) if len(sys.argv) > 5 else None
         build_and_send(cfg, shop_id, shop_id, week_end, None, emp, to)
         return
+    maybe_update(cfg)
     try:
         process_outbox(cfg)
         process_jobs(cfg)
