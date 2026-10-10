@@ -469,6 +469,21 @@ order by l.doc_date, l.doc_id, l.line_no
 
 
 _SACARE_CACHE = {"mtime": None, "prices": None}
+_C6_NAME_CACHE = {}
+
+
+def load_c6_names():
+    """ERP 類別 6 名稱（STKCAT6），供第 18 頁 3PP 細分列名；名稱去掉括號後的韓文。查詢失敗回空 dict（列名改顯示代碼）。"""
+    if not _C6_NAME_CACHE:
+        headers, rows = run_remote(
+            "select cat6_id, name from stkcat6 where org_id is null", timeout=60)  # 類別主檔不分公司（org_id 空值）
+        for row in rows:
+            try:
+                code = float(row[0])
+            except (TypeError, ValueError, IndexError):
+                continue
+            _C6_NAME_CACHE[code] = text(row[1]).split("(")[0].strip()
+    return dict(_C6_NAME_CACHE)
 
 
 def load_sacare_cached():
@@ -1452,6 +1467,14 @@ def build_report_workbook(payload, log=lambda m: None):
                         traffic=traffic10, emp_count=emp_count,
                         gross_bi={"cur": store_gross.get("cur"), "prv": store_gross.get("prv")} if store_gross else None)
     engine.fill_sheet11(wb["17.3PP YOY"], df_cur, df_prev, sacare_prices, dates)
+
+    log("填入 18-19 差異明細比較…")
+    try:
+        engine.C6_NAMES = load_c6_names()
+    except Exception as exc:  # 名稱查不到不影響數字，列名改顯示代碼
+        log(f"  ⚠ 類別 6 名稱查詢失敗，第 18 頁 3PP 細分列名改顯示代碼：{exc}")
+    engine.fill_sheet_detail_products(wb, df_cur, df_prev, sacare_prices, dates)
+    engine.fill_sheet_detail_ops(wb, df_cur, df_prev, sacare_prices, dates)
 
     log("查詢第 12 頁 ERP BI（總業績/3PP/原廠/Apple毛利/3PP毛利）…")
     try:

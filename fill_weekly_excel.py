@@ -1441,6 +1441,444 @@ def fill_sheet11(ws, df_cur, df_prev, sacare_prices, dates: dict):
             write_row(r, pure_b, pure_c)
 
 
+# ─── Sheet 18/19：差異明細比較（週對週／本月對去年同月同期／年累積）────────────────
+# 每列並排三組比較：上週|本週、去年同月同期|本月、去年累積|今年累積（同第 7、16/17 頁的區間）。
+# 兩頁由程式建立（不在模板內），Top 10 等列數可變動。
+DETAIL_SHEET_PRODUCTS = '18.商品明細比較'
+DETAIL_SHEET_OPS      = '19.經營結構比較'
+DETAIL_GROUPS = [('週對週', '上週', '本週', '週差', '週差%'),
+                 ('本月 vs 去年同月同期', '去年同期', '本月', '月差', '月差%'),
+                 ('年累積 vs 去年累積', '去年累積', '今年累積', '年差', '年差%')]
+
+# 主機品類：(列名, 判定)；台數口徑同 calc_metrics（認證機品牌一併計入），營業額＝同 mask 的 NET
+CERT_BRANDS = {881.0, 885.0, 886.0, 888.0}
+C6_HOMEPOD  = {6073.0}
+
+def _is_airpods(d):
+    """AirPods 主機：C6_AIRPODS 只含現行世代，舊款（如去年的 AirPods Pro 2）以 C3=3002＋C4=4014＋品名判定。"""
+    by_name = (d['類別3代碼'] == 3002.0) & (d['類別4代碼'] == 4014.0) & \
+              d['名稱'].astype(str).str.contains('airpods', case=False, na=False)
+    return d['類別6代碼'].isin(C6_AIRPODS) | by_name
+
+def _is_audio_device(d):
+    return _is_airpods(d) | d['類別6代碼'].isin(C6_HOMEPOD)
+
+DEVICE_LINES = [
+    ('Mac 筆電', lambda d: d['類別6代碼'].isin(C6_MACBOOK), 3001.0),
+    ('Mac 桌機', lambda d: d['類別6代碼'].isin({6001.0, 6002.0}), 3001.0),
+    ('iPhone',   lambda d: d['類別4代碼'].isin(C4_IPHONE), 3001.0),
+    ('iPad',     lambda d: d['類別4代碼'].isin(C4_IPAD), 3001.0),
+    ('Watch',    lambda d: d['類別4代碼'].isin(C4_WATCH), 3001.0),
+    ('AirPods',  _is_airpods, 3002.0),
+    ('HomePod',  lambda d: d['類別6代碼'].isin(C6_HOMEPOD), 3002.0),
+]
+
+# Apple 原廠配件（C3=3002，AirPods/HomePod 已列在主機區）依 C4 分列；未列出的 C4 併入「其他」
+APPLE_ACC_C4 = [
+    (4007.0, 'CPU 配件（滑鼠／鍵盤／觸控板）'),
+    (4009.0, 'iPhone 配件'),
+    (4010.0, 'iPad 配件（含 Pencil）'),
+    (4012.0, '通用線材／充電'),
+    (4014.0, '耳機（不含 AirPods）'),
+    (4039.0, 'Watch 配件'),
+    (4067.0, 'Apple TV'),
+]
+
+# 禮券（只統計門市折抵；門市 POS 沒有賣券紀錄）
+#   每月最後一天總部以員工 SA999 開單，用正數沖回當月全部折抵（月結沖帳），統計時整張排除。
+#   折抵金額＝−NET（折抵列為負數；退貨／退訂的反向列為正數，自動扣回）。
+#   即享券 C3=3024（銷售列負數）、享樂券 C3=3047（銷退列負數）、
+#   STUDIO A 週邊商品抵用券 C3=3023 且品名含「抵用券」（排除折抵差額／餘額碼）。
+#   STUDIO A 商品抵用券 200/100 元：贈送碼只計張數，兌換碼計張數＋折抵金額。
+#   ↑ 新券種上市時只需調整此處
+VOUCHER_SETTLE_EMP = 'SA999'
+VOUCHER_RULES = [
+    # (券名, 篩選)
+    ('即享券', lambda d: d['類別3代碼'] == 3024.0),
+    ('享樂券', lambda d: d['類別3代碼'] == 3047.0),
+    ('STUDIO A 週邊商品抵用券',
+     lambda d: (d['類別3代碼'] == 3023.0) & d['名稱'].astype(str).str.contains('抵用券')
+               & ~d['存貨代碼'].isin({'99902213', '99500141'})),
+]
+# 類別 6 名稱（第 18 頁 3PP 細分用）：server 執行時由 ERP STKCAT6 載入；CLI 無來源時顯示代碼
+C6_NAMES: dict = {}
+
+def _c6_label(code) -> str:
+    if pd.isna(code):
+        return '未分類'
+    name = C6_NAMES.get(float(code))
+    return f'{int(code)} {name}' if name else f'類別6 {int(code)}'
+
+VOUCHER_GIFT_SKUS   = {'99901687', '99901688'}   # STUDIO A 商品抵用券 200/100 元／贈送
+VOUCHER_REDEEM_SKUS = {'99901689', '99901690'}   # STUDIO A 商品抵用券 200/100 元－兌換
+
+
+def _detail_frames(df_cur, df_prev, dates):
+    """回傳 6 個期間資料：上週、本週、去年同月同期、本月、去年累積、今年累積。"""
+    cur_s, cur_e, prv_s, prv_e = _yoy_periods(dates)
+    return [
+        period(df_cur,  dates['prev_wk_start'], dates['prev_wk_end']),
+        period(df_cur,  dates['wk_start'],      dates['wk_end']),
+        period(df_prev, dates['ly_start'],      dates['ly_end']),
+        period(df_cur,  dates['mo_start'],      dates['mo_end']),
+        period(df_prev, prv_s, prv_e),
+        period(df_cur,  cur_s, cur_e),
+    ]
+
+
+def _detail_styles():
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    thin = Side(style='thin', color='BFBFBF')
+    return dict(
+        font=Font(name='Arial', size=12),
+        bold=Font(name='Arial', size=12, bold=True),
+        head=Font(name='Arial', size=12, bold=True, color='FFFFFF'),
+        head_fill=PatternFill('solid', fgColor='00A1FF'),
+        group_fills=[PatternFill('solid', fgColor=c) for c in ('DDEBF7', 'E2EFDA', 'FFF2CC')],
+        sec_fill=PatternFill('solid', fgColor='D5D5D5'),
+        border=Border(left=thin, right=thin, top=thin, bottom=thin),
+        center=Alignment(horizontal='center', vertical='center', wrap_text=True),
+        left=Alignment(horizontal='left', vertical='center'),
+    )
+
+
+def _reset_detail_sheet(wb, name):
+    """清掉舊的同名頁，在最後重新建立（模板沒有這兩頁）。"""
+    if name in wb.sheetnames:
+        del wb[name]
+    ws = wb.create_sheet(name)
+    ws.column_dimensions['A'].width = 40
+    for col in range(2, 14):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 13
+    ws.freeze_panes = 'B3'
+    return ws
+
+
+def _write_detail_header(ws, st):
+    ws.merge_cells(start_row=1, start_column=1, end_row=2, end_column=1)
+    ws.cell(row=1, column=1).value = '項目'
+    for gi, (gname, a, b, diff, pct) in enumerate(DETAIL_GROUPS):
+        c0 = 2 + gi * 4
+        ws.merge_cells(start_row=1, start_column=c0, end_row=1, end_column=c0 + 3)
+        ws.cell(row=1, column=c0).value = gname
+        for j, lab in enumerate((a, b, diff, pct)):
+            ws.cell(row=2, column=c0 + j).value = lab
+    for r in (1, 2):
+        for c in range(1, 14):
+            cell = ws.cell(row=r, column=c)
+            cell.font, cell.alignment, cell.border = st['head'], st['center'], st['border']
+            cell.fill = st['head_fill'] if c == 1 or r == 1 else st['group_fills'][(c - 2) // 4]
+            if r == 2 and c > 1:
+                cell.font = st['bold']
+
+
+def _write_section(ws, row, title, st):
+    for c in range(1, 14):
+        cell = ws.cell(row=row, column=c)
+        cell.fill, cell.border = st['sec_fill'], st['border']
+    ws.cell(row=row, column=1).value = title
+    ws.cell(row=row, column=1).font = st['bold']
+    return row + 1
+
+
+_FMT = {
+    'n': ('#,##0', '[Color10]+#,##0;[Red]-#,##0;0'),
+    'f': ('0.00', '[Color10]+0.00;[Red]-0.00;0.00'),
+    'r': ('0.0%', '[Color10]+0.0"pp";[Red]-0.0"pp";0.0"pp"'),
+}
+
+
+def _write_compare_row(ws, row, label, vals, st, kind='n'):
+    """vals＝6 個值（上週, 本週, 去年同期, 本月, 去年累積, 今年累積）。
+    kind：n＝整數金額/件數、f＝兩位小數、r＝比率（差異以百分點 pp 表示，% 欄留空）。"""
+    val_fmt, diff_fmt = _FMT[kind]
+    ws.cell(row=row, column=1).value = label
+    ws.cell(row=row, column=1).font = st['font']
+    ws.cell(row=row, column=1).alignment = st['left']
+    ws.cell(row=row, column=1).border = st['border']
+    for gi in range(3):
+        prev, cur = vals[gi * 2], vals[gi * 2 + 1]
+        c0 = 2 + gi * 4
+        if prev is None or cur is None:
+            diff = pct = None
+        elif kind == 'r':
+            diff, pct = round((cur - prev) * 100, 2), None
+        else:
+            diff = cur - prev
+            pct = safe_rate(diff, prev) if prev else None
+        if kind == 'f':
+            prev = None if prev is None else round(prev, 2)
+            cur = None if cur is None else round(cur, 2)
+            diff = None if diff is None else round(diff, 2)
+        for j, (v, fmt) in enumerate(((prev, val_fmt), (cur, val_fmt), (diff, diff_fmt),
+                                      (pct, '[Color10]+0.0%;[Red]-0.0%;0.0%'))):
+            cell = ws.cell(row=row, column=c0 + j)
+            cell.value = v
+            cell.number_format = fmt
+            cell.font, cell.border = st['font'], st['border']
+    return row + 1
+
+
+def _net_units(d, mask):
+    sale = d.loc[mask & d['交易類型'].isin(SALE_TYPES), '數量'].sum()
+    ret  = d.loc[mask & (d['交易類型'] == '銷退'), '數量'].abs().sum()
+    return int(sale - ret)
+
+
+def _non_sa(d, sa_codes):
+    return d[~d['存貨代碼'].astype(str).str.strip().isin(sa_codes)]
+
+
+def _device_stats(d, sa_codes):
+    """各主機品類 (台數, 營業額)。"""
+    d = _non_sa(d, sa_codes)
+    brand = d['品牌代碼'].isin(CERT_BRANDS)
+    out = {}
+    for name, sel, c3 in DEVICE_LINES:
+        mask = ((d['類別3代碼'] == c3) | brand) & sel(d)
+        out[name] = (_net_units(d, mask), int(d.loc[mask, 'NET'].sum()))
+    return out
+
+
+def _model_units(d, c3, c6_set, must_inc, must_exc):
+    """機型台數，判定同 fill_sheet1 的 calc_units。"""
+    mask = (d['類別3代碼'] == c3) | d['品牌代碼'].isin(CERT_BRANDS)
+    if c6_set is not None:
+        mask &= d['類別6代碼'].isin(c6_set)
+    name = d['名稱'].astype(str)
+    if must_inc: mask &= name.str.contains(must_inc, case=False, na=False)
+    if must_exc: mask &= ~name.str.contains(must_exc, case=False, na=False)
+    return _net_units(d, mask)
+
+
+def _acc_items(d, sa_codes):
+    """Top 10 用：3PP＋原廠配件（排除 AirPods/HomePod、SA、贈品）各存貨代碼的 NET。"""
+    d = _non_sa(d, sa_codes)
+    d = d[d['類別3代碼'].isin([3002.0, 3003.0])]
+    d = d[~((d['類別3代碼'] == 3002.0) & _is_audio_device(d))]
+    is_return = d['交易類型'] == '銷退'
+    is_gift = (d['折扣'].fillna(0) >= 80) | ((d['NET'].abs() == 0) & ~is_return)
+    d = d[~is_gift]
+    return d.groupby('存貨代碼').agg(品名=('名稱', 'first'), rev=('NET', 'sum'))
+
+
+def _write_top_movers(ws, row, title, d_prev, d_cur, prev_lab, cur_lab, sa_codes, st):
+    a, b = _acc_items(d_prev, sa_codes), _acc_items(d_cur, sa_codes)
+    m = a.join(b, how='outer', lsuffix='_a', rsuffix='_b')
+    m['品名'] = m['品名_b'].fillna(m['品名_a'])
+    m['prev'] = m['rev_a'].fillna(0).astype(int)
+    m['cur'] = m['rev_b'].fillna(0).astype(int)
+    m['diff'] = m['cur'] - m['prev']
+    blocks = [('成長 Top 10', m[m['diff'] > 0].sort_values('diff', ascending=False).head(10)),
+              ('衰退 Top 10', m[m['diff'] < 0].sort_values('diff').head(10))]
+    for sub, top in blocks:
+        row = _write_section(ws, row, f'{title}｜{sub}', st)
+        heads = ['品名', '存貨代碼', prev_lab, cur_lab, '差異', '差異%']
+        for c, h in enumerate(heads, start=1):
+            cell = ws.cell(row=row, column=c)
+            cell.value, cell.font, cell.border, cell.alignment = h, st['bold'], st['border'], st['center']
+        row += 1
+        if top.empty:
+            ws.cell(row=row, column=1).value = '（無）'
+            ws.cell(row=row, column=1).font = st['font']
+            row += 1
+        for code, r in top.iterrows():
+            vals = [str(r['品名']), str(code), r['prev'] or None, r['cur'] or None, int(r['diff']),
+                    safe_rate(r['diff'], r['prev']) if r['prev'] else None]
+            fmts = [None, None, '#,##0', '#,##0', '[Color10]+#,##0;[Red]-#,##0;0',
+                    '[Color10]+0.0%;[Red]-0.0%;0.0%']
+            for c, (v, fmt) in enumerate(zip(vals, fmts), start=1):
+                cell = ws.cell(row=row, column=c)
+                cell.value, cell.font, cell.border = v, st['font'], st['border']
+                if fmt:
+                    cell.number_format = fmt
+            row += 1
+        row += 1
+    return row
+
+
+def fill_sheet_detail_products(wb, df_cur, df_prev, sacare_prices, dates: dict):
+    print(f'  Sheet 18: {DETAIL_SHEET_PRODUCTS}', flush=True)
+    sa_codes = set(sacare_prices.keys())
+    frames = _detail_frames(df_cur, df_prev, dates)
+    ws = _reset_detail_sheet(wb, DETAIL_SHEET_PRODUCTS)
+    st = _detail_styles()
+    _write_detail_header(ws, st)
+    row = 3
+
+    # 1. 主機（依品類）
+    row = _write_section(ws, row, '主機（依品類）', st)
+    dev = [_device_stats(f, sa_codes) for f in frames]
+    for name, _, _ in DEVICE_LINES:
+        units = [x[name][0] for x in dev]
+        revs = [x[name][1] for x in dev]
+        asp = [int(round(r / u)) if u > 0 else None for u, r in zip(units, revs)]
+        row = _write_compare_row(ws, row, f'{name} 台數', units, st)
+        row = _write_compare_row(ws, row, f'{name} 營業額', revs, st)
+        row = _write_compare_row(ws, row, f'{name} 平均單價（營業額÷台數）', asp, st)
+
+    # 2. 主機機型明細（列名取第 1 頁 A 欄；六期全為 0 的機型略過）
+    row = _write_section(ws, row, '主機機型明細（台數；新機型去年同期為 0）', st)
+    ws1 = wb['1.主機銷售台數'] if '1.主機銷售台數' in wb.sheetnames else None
+    for row_idx, (c3, c6_set, inc, exc) in PRODUCT_ROWS.items():
+        vals = [_model_units(f, c3, c6_set, inc, exc) for f in frames]
+        if not any(vals):
+            continue
+        label = ws1.cell(row=row_idx + 1, column=1).value if ws1 else f'機型 {row_idx}'
+        row = _write_compare_row(ws, row, str(label).strip(), vals, st)
+
+    # 3. Apple 原廠配件（C3=3002）
+    row = _write_section(ws, row, 'Apple 原廠配件（營業額）', st)
+    acc = [_non_sa(f, sa_codes) for f in frames]
+    acc = [a[a['類別3代碼'] == 3002.0] for a in acc]
+    is_dev = [_is_audio_device(a) for a in acc]
+    known = {c4 for c4, _ in APPLE_ACC_C4}
+    for c4, label in APPLE_ACC_C4:
+        vals = [int(a.loc[~m & (a['類別4代碼'] == c4), 'NET'].sum()) for a, m in zip(acc, is_dev)]
+        row = _write_compare_row(ws, row, label, vals, st)
+    vals = [int(a.loc[~m & ~a['類別4代碼'].isin(known), 'NET'].sum()) for a, m in zip(acc, is_dev)]
+    row = _write_compare_row(ws, row, '其他原廠配件', vals, st)
+    vals = [int(a.loc[m, 'NET'].sum()) for a, m in zip(acc, is_dev)]
+    row = _write_compare_row(ws, row, 'AirPods／HomePod（同主機區）', vals, st)
+    vals = [int(a['NET'].sum()) for a in acc]
+    row = _write_compare_row(ws, row, 'Apple 配件營業額合計（同第 6 頁）', vals, st)
+
+    # 4. 3PP 類別 4 → 類別 6 細分（類別 4 小計口徑同第 7/17 頁；列名取第 7 頁 B 欄）
+    #    類別 6 依今年累積營業額由大到小排，六期全為 0 的略過
+    row = _write_section(ws, row, '3PP 類別細分（營業額；粗體＝類別 4 小計，同第 7、17 頁）', st)
+    from openpyxl.styles import Alignment
+    indent = Alignment(horizontal='left', vertical='center', indent=2)
+    ws7 = wb['7.3PP配件比較'] if '7.3PP配件比較' in wb.sheetnames else None
+    tpp = [_non_sa(f, sa_codes) for f in frames]
+    tpp = [t[t['類別3代碼'] == 3003.0] for t in tpp]
+    pure = [0] * 6
+    for c4, excel_row in C4_ROWS.items():
+        sub = [t[t['類別4代碼'] == c4] for t in tpp]
+        vals = [int(t['NET'].sum()) for t in sub]
+        pure = [p + v for p, v in zip(pure, vals)]
+        if not any(vals) and not any(len(t) for t in sub):
+            continue
+        label = ws7.cell(row=excel_row, column=2).value if ws7 else f'類別4 {int(c4)}'
+        row = _write_compare_row(ws, row, f'{int(c4)} {label}', vals, st)
+        ws.cell(row=row - 1, column=1).font = st['bold']
+        by_c6 = [t.groupby(t['類別6代碼'].fillna(-1))['NET'].sum() for t in sub]
+        codes = set().union(*[set(b.index) for b in by_c6])
+        codes = sorted(codes, key=lambda c: -by_c6[5].get(c, 0))
+        for c6 in codes:
+            c6_vals = [int(b.get(c6, 0)) for b in by_c6]
+            if not any(c6_vals):
+                continue
+            row = _write_compare_row(ws, row, _c6_label(None if c6 == -1 else c6), c6_vals, st)
+            ws.cell(row=row - 1, column=1).alignment = indent
+    mets = [calc_metrics(f, sacare_prices) for f in frames]
+    sa = [m['sa_rev'] for m in mets]
+    row = _write_compare_row(ws, row, 'SA CARE', sa, st)
+    row = _write_compare_row(ws, row, '純配件', pure, st)
+    row = _write_compare_row(ws, row, '加總（純配件＋SA CARE）', [p + s for p, s in zip(pure, sa)], st)
+
+    # 5. 保固搭售明細（ACPP／SA Care 分開看）
+    row = _write_section(ws, row, '保固搭售明細', st)
+    for dev_name, unit_k, ac_k, sa_k, w_k in (
+            ('CPU', 'cpu_total', 'acpp_mac', 'sa_cpu', 'warranty_cpu'),
+            ('iPad', 'ipad', 'acpp_ipad', 'sa_ipad', 'warranty_ipad'),
+            ('iPhone', 'iphone', 'acpp_iphone', 'sa_iphone', 'warranty_iphone'),
+            ('Watch', 'watch', 'acpp_watch', 'sa_watch', 'warranty_watch'),
+            ('AirPods', 'airpods', 'acpp_airpods', 'sa_airpods', 'warranty_airpods')):
+        row = _write_compare_row(ws, row, f'{dev_name} 台數', [m[unit_k] for m in mets], st)
+        row = _write_compare_row(ws, row, f'{dev_name} ACPP 套數', [m[ac_k] for m in mets], st)
+        row = _write_compare_row(ws, row, f'{dev_name} SA Care 套數', [m[sa_k] for m in mets], st)
+        row = _write_compare_row(ws, row, f'{dev_name} 搭售率（AC+SA）',
+                                 [safe_rate(m[w_k], m[unit_k]) if m[unit_k] else None for m in mets],
+                                 st, kind='r')
+    row = _write_compare_row(ws, row, 'ACPP 營業額', [m['acpp_rev'] for m in mets], st)
+    row = _write_compare_row(ws, row, 'SA Care 營業額', [m['sa_rev'] for m in mets], st)
+    row = _write_compare_row(ws, row, '保固營業額（AC+SA）', [m['warranty_rev'] for m in mets], st)
+
+    # 6. 成長／衰退 Top 10（3PP＋原廠配件單品）
+    row += 1
+    row = _write_top_movers(ws, row, '本週 vs 上週', frames[0], frames[1], '上週', '本週', sa_codes, st)
+    _write_top_movers(ws, row, '本月 vs 去年同月同期', frames[2], frames[3], '去年同期', '本月', sa_codes, st)
+
+
+def _doc_set(d, mask):
+    return set(d.loc[mask, '單據代碼'].dropna().astype(str))
+
+
+def _voucher_rows(d):
+    """回傳 [(列名, 值)]；折抵金額以正數表示，單數＝折抵淨額 > 0 的單據數。"""
+    rows = []
+    d = d[d['員工代碼'].astype(str).str.strip() != VOUCHER_SETTLE_EMP]
+    for name, sel in VOUCHER_RULES:
+        v = d[sel(d)]
+        amt = -v['NET']
+        per_doc = amt.groupby(v['單據代碼']).sum()
+        rows.append((f'{name} 折抵單數', int((per_doc > 0).sum())))
+        rows.append((f'{name} 折抵金額', int(round(amt.sum()))))
+    codes = d['存貨代碼'].astype(str).str.strip()
+    qty_types = d['交易類型'].isin(['銷售', '尾款', '銷退'])
+    gift = d[codes.isin(VOUCHER_GIFT_SKUS) & qty_types]
+    redeem = d[codes.isin(VOUCHER_REDEEM_SKUS)]
+    rows.append(('STUDIO A 商品抵用券 贈送張數', int(gift['數量'].sum())))
+    rows.append(('STUDIO A 商品抵用券 兌換張數',
+                 int(redeem.loc[redeem['交易類型'].isin(['銷售', '銷退']), '數量'].sum())))
+    rows.append(('STUDIO A 商品抵用券 兌換金額', int(round(-redeem['NET'].sum()))))
+    return rows
+
+
+def fill_sheet_detail_ops(wb, df_cur, df_prev, sacare_prices, dates: dict):
+    print(f'  Sheet 19: {DETAIL_SHEET_OPS}', flush=True)
+    sa_codes = set(sacare_prices.keys())
+    frames = _detail_frames(df_cur, df_prev, dates)
+    ws = _reset_detail_sheet(wb, DETAIL_SHEET_OPS)
+    st = _detail_styles()
+    _write_detail_header(ws, st)
+    row = 3
+    mets = [calc_metrics(f, sacare_prices) for f in frames]
+
+    # 1. 營收結構
+    row = _write_section(ws, row, '營收結構', st)
+    for label, key in (('總營業額', 'total_rev'), ('零售營業額', 'retail_rev'),
+                       ('Apple 主機營業額', 'rev_3001'), ('Apple 配件營業額', 'rev_3002'),
+                       ('3PP 配件營業額', 'rev_3003'), ('保固營業額（AC+SA）', 'warranty_rev')):
+        row = _write_compare_row(ws, row, label, [m[key] for m in mets], st)
+    for label, key in (('主機佔比', 'rev_3001'), ('Apple 配件佔比', 'rev_3002'),
+                       ('3PP 配件佔比', 'rev_3003'), ('保固佔比', 'warranty_rev')):
+        row = _write_compare_row(ws, row, label,
+                                 [safe_rate(m[key], m['total_rev']) if m['total_rev'] else None for m in mets],
+                                 st, kind='r')
+
+    # 2. 客單結構（成交單＝有銷售列且非整單銷退，同 calc_metrics 的成交筆數）
+    row = _write_section(ws, row, '客單結構', st)
+    txn, aov, ipt, dev_share, tpp_share, tpp_aov = [], [], [], [], [], []
+    for f, m in zip(frames, mets):
+        nf = _non_sa(f, sa_codes)
+        deals = _doc_set(f, f['交易類型'] == '銷售') - _doc_set(f, f['交易類型'] == '銷退')
+        n = len(deals)
+        in_deal = nf['單據代碼'].astype(str).isin(deals) & (nf['交易類型'] == '銷售')
+        goods = in_deal & nf['類別3代碼'].isin([3001.0, 3002.0, 3003.0])
+        dev_docs = _doc_set(nf, in_deal & (nf['類別3代碼'] == 3001.0))
+        tpp_mask = in_deal & (nf['類別3代碼'] == 3003.0)
+        tpp_docs = _doc_set(nf, tpp_mask)
+        txn.append(m['txn_count'])
+        aov.append(int(round(m['retail_rev'] / n)) if n else None)
+        ipt.append(nf.loc[goods, '數量'].sum() / n if n else None)
+        dev_share.append(safe_rate(len(dev_docs), n) if n else None)
+        tpp_share.append(safe_rate(len(tpp_docs), n) if n else None)
+        tpp_aov.append(int(round(nf.loc[tpp_mask, 'NET'].sum() / len(tpp_docs))) if tpp_docs else None)
+    row = _write_compare_row(ws, row, '成交筆數', txn, st)
+    row = _write_compare_row(ws, row, '客單價（零售營業額÷成交筆數）', aov, st)
+    row = _write_compare_row(ws, row, '每筆件數（主機＋配件＋3PP）', ipt, st, kind='f')
+    row = _write_compare_row(ws, row, '含主機單佔比', dev_share, st, kind='r')
+    row = _write_compare_row(ws, row, '含 3PP 單佔比', tpp_share, st, kind='r')
+    row = _write_compare_row(ws, row, '3PP 單均金額（含 3PP 單）', tpp_aov, st)
+
+    # 3. 禮券
+    row = _write_section(ws, row, '禮券折抵（不含總部月結沖帳；退貨／退訂已扣回）', st)
+    per_period = [_voucher_rows(f) for f in frames]
+    for i, (label, _) in enumerate(per_period[0]):
+        row = _write_compare_row(ws, row, label, [p[i][1] for p in per_period], st)
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
     args = parse_args()
@@ -1582,6 +2020,8 @@ def main():
     fill_sheet9(wb['15.個人月3PP'], df_cur, sacare_prices, dates)
     fill_sheet10(wb['16.月報YOY'], df_cur, df_prev, sacare_prices, dates)
     fill_sheet11(wb['17.3PP YOY'], df_cur, df_prev, sacare_prices, dates)
+    fill_sheet_detail_products(wb, df_cur, df_prev, sacare_prices, dates)
+    fill_sheet_detail_ops(wb, df_cur, df_prev, sacare_prices, dates)
 
     wb.save(output)
     print(f'\n✓ 完成: {output}')
