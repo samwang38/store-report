@@ -110,7 +110,7 @@ def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, t
     span = f"{wk_start:%m/%d}–{wk_end:%m/%d}"
     send_mail(cfg, to, f"【週報】{shop_name} {span}",
               f"{manager_name or '店長'} 你好：\n\n附件是 {shop_name} {wk_start:%Y/%m/%d}（日）到 {wk_end:%Y/%m/%d}（六）的週報。\n"
-              "數字有疑問，直接在 LINE 告訴 Sam，確認後修正重寄不扣次。\n\n週日週報小幫手",
+              "數字有疑問，直接在 LINE 告訴 Sam，確認後修正重寄不扣次。\n\n週報小幫手",
               attachment=(filename, body))
     log(f"  已寄出 {filename}（{len(body):,} bytes，{time.time() - t0:.0f} 秒）")
 
