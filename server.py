@@ -1468,7 +1468,7 @@ def build_report_workbook(payload, log=lambda m: None):
                         gross_bi={"cur": store_gross.get("cur"), "prv": store_gross.get("prv")} if store_gross else None)
     engine.fill_sheet11(wb["17.3PP YOY"], df_cur, df_prev, sacare_prices, dates)
 
-    log("填入 18-20 差異明細比較／3PP 熱門系列…")
+    log("填入 18-20 差異明細比較／3PP 熱門商品…")
     try:
         engine.C6_NAMES = load_c6_names()
     except Exception as exc:  # 名稱查不到不影響數字，列名改顯示代碼

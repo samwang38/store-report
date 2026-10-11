@@ -1830,10 +1830,10 @@ def fill_sheet_detail_ops(wb, df_cur, df_prev, sacare_prices, dates: dict):
         row = _write_compare_row(ws, row, label, [p[i][1] for p in per_period], st)
 
 
-# ─── Sheet 20：3PP 熱門系列（本週／本月，同款不同色合併）─────────────────────────
+# ─── Sheet 20：3PP 熱門商品（本週／本月，同款不同色合併）─────────────────────────
 # 取該期 3PP 營業額前 10 大的「類別 4＋類別 6」，每組依數量列前 5 個系列。
 # ERP 商品主檔沒有系列／顏色欄位，系列由品名去掉顏色字判定（同類別 4＋類別 6 內品名相同＝同系列）。
-HOT_SERIES_SHEET  = '20.3PP 熱門系列'
+HOT_SERIES_SHEET  = '20.3PP 熱門商品'
 HOT_SERIES_GROUPS = 10   # 每期展開的類別數
 HOT_SERIES_TOP    = 5    # 每類列出的系列數
 SERIES_COLOR_RE = re.compile(
