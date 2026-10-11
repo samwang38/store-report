@@ -34,6 +34,8 @@ from smtp_test import connect
 
 HERE = Path(__file__).resolve().parent
 MAX_JOBS_PER_RUN = 3
+QUICK_ROUNDS = 3            # 每輪結束後再快速檢查幾次（3 × 12 秒，留空檔給下一輪啟動）
+QUICK_INTERVAL_SEC = 12
 UPDATE_INTERVAL_SEC = 600
 UPDATE_STAMP = HERE / ".last_update_check"
 UPDATE_BLOCKED_STAMP = HERE / ".update_blocked_notified"
@@ -214,7 +216,8 @@ def process_traffic_verify(cfg):
         worker(cfg, "POST", "/api/mac/traffic/verify/result", {"shop_id": item["shop_id"], "ok": True})
         log(f"門市 {item['shop_id']} 人流帳號驗證成功")
     except Exception as e:
-        worker(cfg, "POST", "/api/mac/traffic/verify/result", {"shop_id": item["shop_id"], "ok": False, "error": str(e)[:200]})
+        worker(cfg, "POST", "/api/mac/traffic/verify/result",
+               {"shop_id": item["shop_id"], "ok": False, "error": "帳號或密碼不正確，或人流系統暫時無法登入"})
         log(f"門市 {item['shop_id']} 人流帳號驗證失敗：{e}")
 
 
@@ -253,6 +256,12 @@ def main():
         process_outbox(cfg)
         process_traffic_verify(cfg)
         process_jobs(cfg)
+        # launchd 每 60 秒才啟動一次；這輪剩下的時間每 12 秒再看一次驗證碼信與待測人流帳號，
+        # 讓店長按「測試登入」或等驗證碼時不用等滿一分鐘
+        for _ in range(QUICK_ROUNDS):
+            time.sleep(QUICK_INTERVAL_SEC)
+            process_outbox(cfg)
+            process_traffic_verify(cfg)
     except urllib.error.URLError as e:
         log(f"Worker 連線失敗：{e}")
 
