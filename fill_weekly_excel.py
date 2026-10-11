@@ -99,7 +99,9 @@ VAP_BRANDS     = {59.0, 224.0, 277.0, 106.0}
 # 每月重點：本期統計對象為品牌代碼 496（Starter Kit / Hello Nature 等入門組）。
 # 此頁每月會換統計對象、且未必以品牌區分，換檔時直接改這裡。
 MONTHLY_FOCUS_BRANDS = {496.0}
+MONTHLY_FOCUS_LABEL  = '品牌 496 Woongjin（ARpedia 繪本：Hello Nature／Starter Kit 入門組、Disney AR 互動繪本組等）'
 SPEAKERS_C4          = {4013.0}   # 3PP 藍牙喇叭（同第 7 頁 3PP配件比較的 Speakers 列）
+SPEAKERS_EXCL_BRANDS = {453.0}    # 第 4 頁「排除 Momax」區塊：Momax 喇叭皆掛品牌 453
 
 # ─── Sheet 13/14 X 欄「服務費」──────────────────────────────────────────────
 # 99900947 Mac資料轉移/重置系統、99900948 iOS資料轉移/重置系統，統計含稅金額。
@@ -1208,12 +1210,26 @@ def _label_row(ws, label: str, start: int = 2):
             return r
     return None
 
+def _copy_row_style(ws, src_row: int, dst_row: int, ncol: int):
+    from copy import copy
+    for c in range(1, ncol + 1):
+        ws.cell(row=dst_row, column=c)._style = copy(ws.cell(row=src_row, column=c)._style)
+
+
+def _clear_below(ws, row: int):
+    """刪掉 row 以下的列（第 3/4 頁表格下方的附加區塊每次重寫；員工列重建時會把它們當尾端列搬動）。"""
+    if ws.max_row > row:
+        ws.delete_rows(row + 1, ws.max_row - row)
+
+
 def fill_sheet_focus(ws, df_cur, dates: dict):
-    """第 3 頁 每月重點：C=週銷售數、D=月銷售數（品牌 MONTHLY_FOCUS_BRANDS 的淨數量）。"""
+    """第 3 頁 每月重點：C=週銷售數、D=月銷售數（品牌 MONTHLY_FOCUS_BRANDS 的淨數量）。
+    表格下方標示統計項目（MONTHLY_FOCUS_LABEL）並列出本月實際計入的商品。"""
     print('  Sheet 3: 每月重點', flush=True)
     d_wk = period(df_cur, dates['wk_start'], dates['wk_end'])
     d_mo = period(df_cur, dates['mo_start'], dates['mo_end'])
     total_row = _label_row(ws, 'Total') or (2 + len(EMPLOYEES))
+    _clear_below(ws, total_row)
 
     for i, (code, _) in enumerate(EMPLOYEES):
         row = i + 2
@@ -1224,6 +1240,28 @@ def fill_sheet_focus(ws, df_cur, dates: dict):
     for col in (3, 4):
         total = sum(ws.cell(row=r, column=col).value or 0 for r in range(2, total_row))
         ws.cell(row=total_row, column=col).value = total or None
+
+    # 統計項目說明＋本月計入商品（全店淨數量，依數量排序）
+    from openpyxl.styles import Font
+    bold = Font(name='Arial', size=12, bold=True)
+    plain = Font(name='Arial', size=12)
+    r = total_row + 2
+    ws.cell(row=r, column=1).value = f'統計項目：{MONTHLY_FOCUS_LABEL}'
+    ws.cell(row=r, column=1).font = bold
+    r += 1
+    ws.cell(row=r, column=1).value = f"本月計入商品（{dates['mo_start']:%m/%d}~{dates['mo_end']:%m/%d}）"
+    ws.cell(row=r, column=4).value = '月銷售數'
+    for c in (1, 4):
+        ws.cell(row=r, column=c).font = bold
+    items = d_mo[_focus_mask(d_mo)]
+    qty = {name: _net_qty(g, _focus_mask(g)) for name, g in items.groupby('名稱')}
+    for name, q in sorted(qty.items(), key=lambda kv: -kv[1]):
+        if not q:
+            continue
+        r += 1
+        ws.cell(row=r, column=1).value = str(name)
+        ws.cell(row=r, column=4).value = q
+        ws.cell(row=r, column=1).font = ws.cell(row=r, column=4).font = plain
 
 def fill_sheet_speakers(ws, df_cur, dates: dict):
     """第 4 頁 Speakers（3PP 藍牙喇叭 C3=3003 且 C4∈SPEAKERS_C4）：
@@ -1253,6 +1291,41 @@ def fill_sheet_speakers(ws, df_cur, dates: dict):
     if ytd_row:
         amt = int(d_ytd.loc[_speakers_mask(d_ytd), 'NET'].sum())
         ws.cell(row=ytd_row, column=2).value = amt or None
+
+    # 排除 Momax 區塊：A=員工編號、B=姓名、C=週銷數量、D=月數量、E=週銷金額、F=月金額
+    base = ytd_row or total_row
+    _clear_below(ws, base)
+    title_row = base + 2
+    ws.cell(row=title_row, column=1).value = 'Speakers（排除 Momax）'
+    from openpyxl.styles import Font
+    ws.cell(row=title_row, column=1).font = Font(name='Arial', size=12, bold=True)
+    head_row = title_row + 1
+    _copy_row_style(ws, 1, head_row, 6)
+    for c, h in enumerate(('員工編號', '姓名', '週銷數量', '月數量', '週銷金額', '月金額'), start=1):
+        ws.cell(row=head_row, column=c).value = h
+
+    def excl_mask(d):
+        return _speakers_mask(d) & ~d['品牌代碼'].isin(SPEAKERS_EXCL_BRANDS)
+
+    first = head_row + 1
+    for i, (code, display) in enumerate(EMPLOYEES):
+        row = first + i
+        _copy_row_style(ws, 2, row, 6)
+        # 顯示名為 "SA1092 Sam" 時拆出姓名（同 server.rebuild_two_col_employee_sheet）
+        name = display[len(code):].strip() if display.startswith(code) else display
+        ws.cell(row=row, column=1).value = code
+        ws.cell(row=row, column=2).value = name or None
+        ew, em = d_wk[d_wk['員工代碼'] == code], d_mo[d_mo['員工代碼'] == code]
+        ws.cell(row=row, column=3).value = _net_qty(ew, excl_mask(ew)) or None
+        ws.cell(row=row, column=4).value = _net_qty(em, excl_mask(em)) or None
+        ws.cell(row=row, column=5).value = int(ew.loc[excl_mask(ew), 'NET'].sum()) or None
+        ws.cell(row=row, column=6).value = int(em.loc[excl_mask(em), 'NET'].sum()) or None
+    sum_row = first + len(EMPLOYEES)
+    _copy_row_style(ws, total_row, sum_row, 6)
+    ws.cell(row=sum_row, column=1).value = 'Total'
+    for col in range(3, 7):
+        total = sum(ws.cell(row=r, column=col).value or 0 for r in range(first, sum_row))
+        ws.cell(row=sum_row, column=col).value = total or None
 
 # ─── Sheet 5: 門市人流（ShopperTrak 逐日來客數）─────────────────────────────
 def _traffic_sum(daily: dict, start: date, end: date) -> int:
