@@ -167,8 +167,9 @@ def epb_reachable(timeout=3):
         return False
 
 
-def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, to, manager_name=""):
+def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, to, manager_name="", traffic=None):
     import server
+    import shoppertrak_traffic
     wk_end = date.fromisoformat(week_end)
     wk_start = wk_end - timedelta(days=6)
     payload = {"shopId": shop_id, "weekEnd": week_end, "weekStart": wk_start.isoformat(),
@@ -176,7 +177,11 @@ def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, t
     if yoy_end:
         payload["yoyEnd"] = yoy_end
     t0 = time.time()
-    filename, body, _meta = server.build_report_excel(payload, log=lambda m: log(f"  {m}"))
+    t = traffic or {}
+    if t.get("username"):
+        log("  使用門市自己的人流帳號")
+    with shoppertrak_traffic.credentials_override(t.get("username"), t.get("password")):
+        filename, body, _meta = server.build_report_excel(payload, log=lambda m: log(f"  {m}"))
     span = f"{wk_start:%m/%d}–{wk_end:%m/%d}"
     send_mail(cfg, to, f"【週報】{shop_name} {span}",
               f"{manager_name or '店長'} 你好：\n\n附件是 {shop_name} {wk_start:%Y/%m/%d}（日）到 {wk_end:%Y/%m/%d}（六）的週報。\n"
@@ -198,6 +203,21 @@ def process_outbox(cfg):
             log(f"寄信失敗 #{it['id']}：{e}")
 
 
+def process_traffic_verify(cfg):
+    """店長在 LINE 填的人流帳號：每輪試登入一組，結果回報給 Worker。"""
+    item = worker(cfg, "GET", "/api/mac/traffic/verify/next")["item"]
+    if not item:
+        return
+    import shoppertrak_traffic
+    try:
+        shoppertrak_traffic.verify_login(item["username"], item["password"])
+        worker(cfg, "POST", "/api/mac/traffic/verify/result", {"shop_id": item["shop_id"], "ok": True})
+        log(f"門市 {item['shop_id']} 人流帳號驗證成功")
+    except Exception as e:
+        worker(cfg, "POST", "/api/mac/traffic/verify/result", {"shop_id": item["shop_id"], "ok": False, "error": str(e)[:200]})
+        log(f"門市 {item['shop_id']} 人流帳號驗證失敗：{e}")
+
+
 def process_jobs(cfg):
     if not epb_reachable():
         log("EPB 連不上（VPN／內網？），本輪不領產報工作")
@@ -209,7 +229,7 @@ def process_jobs(cfg):
         log(f"領到工作 #{job['id']}：{job['shop_id']} {job['shop_name']} 週結束 {job['week_end']}")
         try:
             build_and_send(cfg, job["shop_id"], job["shop_name"], job["week_end"], job.get("yoy_end"),
-                           job.get("employee_count"), job["to_email"], job.get("manager_name", ""))
+                           job.get("employee_count"), job["to_email"], job.get("manager_name", ""), job.get("traffic"))
             worker(cfg, "POST", "/api/mac/jobs/result", {"id": job["id"], "ok": True, "version": app_version()})
         except Exception as e:
             tb = traceback.format_exc()
@@ -231,6 +251,7 @@ def main():
     maybe_update(cfg)
     try:
         process_outbox(cfg)
+        process_traffic_verify(cfg)
         process_jobs(cfg)
     except urllib.error.URLError as e:
         log(f"Worker 連線失敗：{e}")

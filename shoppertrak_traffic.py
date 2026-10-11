@@ -13,6 +13,7 @@ Playwright 採 lazy import：未安裝時 get_traffic_total() 會丟出 RuntimeE
 """
 import json
 import threading
+from contextlib import contextmanager
 import time
 from datetime import date
 from pathlib import Path
@@ -74,8 +75,27 @@ def save_config(cfg):
         )
 
 
+# 門市自己的帳號（週報小幫手：店長在 LINE 選填）。設定時優先於 local_config 的預設帳號。
+# 產報時一次只跑一份，用模組層級變數即可（load_traffic 內的執行緒也讀得到）。
+_CRED_OVERRIDE = None
+
+
+@contextmanager
+def credentials_override(username, password):
+    """with 區塊內改用指定帳密；帳密不完整則不覆蓋（沿用預設帳號）。"""
+    global _CRED_OVERRIDE
+    prev = _CRED_OVERRIDE
+    _CRED_OVERRIDE = (username.strip(), password) if username and password else None
+    try:
+        yield
+    finally:
+        _CRED_OVERRIDE = prev
+
+
 def get_credentials():
     """回傳 (username, password)；未設定則回 (None, None)。"""
+    if _CRED_OVERRIDE:
+        return _CRED_OVERRIDE
     st = load_config().get("shoppertrak") or {}
     return st.get("username"), st.get("password")
 
@@ -127,7 +147,7 @@ def site_id_for_shop(shop_id):
 
 # ─── 登入（Playwright 無頭 Chromium，比照插件流程）──────────────────────
 _AUTH_LOCK = threading.Lock()
-_auth_cache = {"token": None, "tenant": None}
+_auth_cache = {"token": None, "tenant": None, "username": None}
 
 # 帳號／密碼欄位偵測（對應插件 findUsernameField / findPasswordField）
 _USER_HINTS = ("email", "user", "account", "login", "帳號", "使用者")
@@ -272,15 +292,21 @@ def _login(username, password, log=lambda m: None, timeout_ms=60000):
 def _get_auth(log=lambda m: None, force=False):
     """取得快取或重新登入後的 (token, tenant)。"""
     with _AUTH_LOCK:
-        if not force and _auth_cache["token"] and _auth_cache["tenant"]:
-            return _auth_cache["token"], _auth_cache["tenant"]
         username, password = get_credentials()
         if not (username and password):
             raise RuntimeError("尚未設定 ShopperTrak 帳密")
+        # 快取以帳號區分：換門市帳號時要重新登入
+        if not force and _auth_cache["token"] and _auth_cache["tenant"] and _auth_cache["username"] == username:
+            return _auth_cache["token"], _auth_cache["tenant"]
         token, tenant = _login(username, password, log=log)
-        _auth_cache["token"] = token
-        _auth_cache["tenant"] = tenant
+        _auth_cache.update(token=token, tenant=tenant, username=username)
         return token, tenant
+
+
+def verify_login(username, password, log=lambda m: None):
+    """試登入一次（店長在 LINE 填好帳號後由 Mac 驗證）；失敗丟出例外。"""
+    _login(username, password, log=log)
+    return True
 
 
 def _auth_headers(token, tenant):
