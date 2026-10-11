@@ -59,7 +59,7 @@ def worker(cfg, method, path, body=None):
         rw["workerUrl"].rstrip("/") + path, method=method,
         data=json.dumps(body).encode() if body is not None else None,
         headers={"authorization": f"Bearer {rw['macSecret']}", "content-type": "application/json",
-                 "user-agent": "report-weekly-mac/1.0"})
+                 "user-agent": "report-weekly-mac/1.0", "x-app-version": app_version()})
     with urllib.request.urlopen(req, timeout=30) as res:
         return json.loads(res.read().decode())
 
