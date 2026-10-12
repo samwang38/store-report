@@ -1515,11 +1515,12 @@ def fill_sheet11(ws, df_cur, df_prev, sacare_prices, dates: dict):
             write_row(r, pure_b, pure_c)
 
 
-# ─── Sheet 18/19：差異明細比較（週對週／本月對去年同月同期／年累積）────────────────
+# ─── Sheet 18/20：差異明細比較（週對週／本月對去年同月同期／年累積）────────────────
 # 每列並排三組比較：上週|本週、去年同月同期|本月、去年累積|今年累積（同第 7、16/17 頁的區間）。
 # 兩頁由程式建立（不在模板內），Top 10 等列數可變動。
 DETAIL_SHEET_PRODUCTS = '18.商品明細比較'
-DETAIL_SHEET_OPS      = '19.經營結構比較'
+DETAIL_SHEET_OPS      = '20.經營結構比較'
+TPP_DETAIL_SHEET      = '19.3PP 類別細分'
 DETAIL_GROUPS = [('週對週', '上週', '本週', '週差', '週差%'),
                  ('本月 vs 去年同月同期', '去年同期', '本月', '月差', '月差%'),
                  ('年累積 vs 去年累積', '去年累積', '今年累積', '年差', '年差%')]
@@ -1574,7 +1575,7 @@ VOUCHER_RULES = [
      lambda d: (d['類別3代碼'] == 3023.0) & d['名稱'].astype(str).str.contains('抵用券')
                & ~d['存貨代碼'].isin({'99902213', '99500141'})),
 ]
-# 類別 6 名稱（第 18 頁 3PP 細分用）：server 執行時由 ERP STKCAT6 載入；CLI 無來源時顯示代碼
+# 類別 6 名稱（第 19 頁 3PP 細分用）：server 執行時由 ERP STKCAT6 載入；CLI 無來源時顯示代碼
 C6_NAMES: dict = {}
 
 def _c6_label(code) -> str:
@@ -1601,23 +1602,53 @@ def _detail_frames(df_cur, df_prev, dates):
 
 
 def _detail_styles():
+    """分析頁共用樣式：深藍標題、淡色組別子標題、淺藍灰分區列、斑馬紋資料列、組別間中粗直線。"""
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    thin = Side(style='thin', color='BFBFBF')
+    hair = Side(style='thin', color='D9D9D9')
     return dict(
         font=Font(name='Arial', size=12),
         bold=Font(name='Arial', size=12, bold=True),
+        cur=Font(name='Arial', size=12, bold=True, color='1F3864'),   # 本期欄
         head=Font(name='Arial', size=12, bold=True, color='FFFFFF'),
-        head_fill=PatternFill('solid', fgColor='00A1FF'),
+        head_fill=PatternFill('solid', fgColor='1F3864'),
         group_fills=[PatternFill('solid', fgColor=c) for c in ('DDEBF7', 'E2EFDA', 'FFF2CC')],
-        sec_fill=PatternFill('solid', fgColor='D5D5D5'),
-        border=Border(left=thin, right=thin, top=thin, bottom=thin),
+        sec_fill=PatternFill('solid', fgColor='D6DCE4'),
+        zebra_fill=PatternFill('solid', fgColor='F2F2F2'),
+        total_fill=PatternFill('solid', fgColor='DDEBF7'),
+        no_fill=PatternFill(fill_type=None),
+        hair=hair,
+        mid=Side(style='medium', color='7F7F7F'),
+        border=Border(left=hair, right=hair, top=hair, bottom=hair),
         center=Alignment(horizontal='center', vertical='center', wrap_text=True),
         left=Alignment(horizontal='left', vertical='center'),
+        left_wrap=Alignment(horizontal='left', vertical='center', wrap_text=True),
+        indent=Alignment(horizontal='left', vertical='center', indent=1),
+        zebra=0,
     )
 
 
+def _paint_row(ws, row, st, role='data', cols=None, group_starts=(), fill=None, height=20):
+    """依角色上底色與框線：data＝斑馬紋、section＝分區列、total＝小計/合計、head＝標題。
+    cols：要塗的欄（預設 A～M）；group_starts：組別第一欄（左側畫中粗線）；fill：指定底色（覆蓋斑馬紋）。"""
+    from openpyxl.styles import Border
+    cols = cols or range(1, 14)
+    if role == 'data':
+        st['zebra'] += 1
+        fill = fill or (st['zebra_fill'] if st['zebra'] % 2 == 0 else st['no_fill'])
+    else:
+        st['zebra'] = 0
+        fill = fill or {'section': st['sec_fill'], 'total': st['total_fill']}.get(role, st['head_fill'])
+    top = st['mid'] if role in ('section', 'total') else None
+    for c in cols:
+        cell = ws.cell(row=row, column=c)
+        cell.border = Border(left=st['mid'] if c in group_starts else None, top=top, bottom=st['hair'])
+        cell.fill = fill
+    if height:   # 有自動換行的列傳 None，讓 Excel 依內容撐高
+        ws.row_dimensions[row].height = height
+
+
 def _reset_detail_sheet(wb, name, freeze='B3'):
-    """清掉舊的同名頁，在最後重新建立（模板沒有這兩頁）。"""
+    """清掉舊的同名頁，在最後重新建立（模板沒有這幾頁）。"""
     if name in wb.sheetnames:
         del wb[name]
     ws = wb.create_sheet(name)
@@ -1625,10 +1656,15 @@ def _reset_detail_sheet(wb, name, freeze='B3'):
     for col in range(2, 14):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 13
     ws.freeze_panes = freeze   # 只能設一次：重設會留下重複的 selection，Excel 開檔會要求修復
+    ws.sheet_view.showGridLines = False
     return ws
 
 
+DETAIL_GROUP_STARTS = (2, 6, 10)
+
+
 def _write_detail_header(ws, st):
+    from openpyxl.styles import Border
     ws.merge_cells(start_row=1, start_column=1, end_row=2, end_column=1)
     ws.cell(row=1, column=1).value = '項目'
     for gi, (gname, a, b, diff, pct) in enumerate(DETAIL_GROUPS):
@@ -1640,18 +1676,20 @@ def _write_detail_header(ws, st):
     for r in (1, 2):
         for c in range(1, 14):
             cell = ws.cell(row=r, column=c)
-            cell.font, cell.alignment, cell.border = st['head'], st['center'], st['border']
+            cell.font, cell.alignment = st['head'], st['center']
+            cell.border = Border(left=st['mid'] if c in DETAIL_GROUP_STARTS else None, bottom=st['hair'])
             cell.fill = st['head_fill'] if c == 1 or r == 1 else st['group_fills'][(c - 2) // 4]
             if r == 2 and c > 1:
-                cell.font = st['bold']
+                cell.font = st['cur'] if (c - 2) % 4 == 1 else st['bold']
+    ws.row_dimensions[1].height = 26
+    ws.row_dimensions[2].height = 22
 
 
-def _write_section(ws, row, title, st):
-    for c in range(1, 14):
-        cell = ws.cell(row=row, column=c)
-        cell.fill, cell.border = st['sec_fill'], st['border']
+def _write_section(ws, row, title, st, ncols=13, group_starts=DETAIL_GROUP_STARTS):
+    _paint_row(ws, row, st, 'section', cols=range(1, ncols + 1), group_starts=group_starts)
     ws.cell(row=row, column=1).value = title
     ws.cell(row=row, column=1).font = st['bold']
+    ws.cell(row=row, column=1).alignment = st['left']
     return row + 1
 
 
@@ -1660,36 +1698,46 @@ _FMT = {
     'f': ('0.00', '[Color10]+0.00;[Red]-0.00;0.00'),
     'r': ('0.0%', '[Color10]+0.0"pp";[Red]-0.0"pp";0.0"pp"'),
 }
+_PCT_FMT = '[Color10]+0.0%;[Red]-0.0%;0.0%'
 
 
-def _write_compare_row(ws, row, label, vals, st, kind='n'):
+def _is_total_label(label):
+    return str(label).startswith('加總') or '合計' in str(label)
+
+
+def _diff_pair(prev, cur, kind='n'):
+    """(差異, 差異%)；比率類差異以百分點表示、% 留空。"""
+    if prev is None or cur is None:
+        return None, None
+    if kind == 'r':
+        return round((cur - prev) * 100, 2), None
+    diff = cur - prev
+    return (round(diff, 2) if kind == 'f' else diff), (safe_rate(diff, prev) if prev else None)
+
+
+def _write_compare_row(ws, row, label, vals, st, kind='n', role=None, indent=True):
     """vals＝6 個值（上週, 本週, 去年同期, 本月, 去年累積, 今年累積）。
-    kind：n＝整數金額/件數、f＝兩位小數、r＝比率（差異以百分點 pp 表示，% 欄留空）。"""
+    kind：n＝整數金額/件數、f＝兩位小數、r＝比率（差異以百分點 pp 表示，% 欄留空）。
+    role：data／total（預設依列名判斷：「合計」「加總」為 total）。"""
+    role = role or ('total' if _is_total_label(label) else 'data')
+    _paint_row(ws, row, st, role, group_starts=DETAIL_GROUP_STARTS)
     val_fmt, diff_fmt = _FMT[kind]
-    ws.cell(row=row, column=1).value = label
-    ws.cell(row=row, column=1).font = st['font']
-    ws.cell(row=row, column=1).alignment = st['left']
-    ws.cell(row=row, column=1).border = st['border']
+    a = ws.cell(row=row, column=1)
+    a.value = label
+    a.font = st['bold'] if role == 'total' else st['font']
+    a.alignment = st['indent'] if (indent and role == 'data') else st['left']
     for gi in range(3):
         prev, cur = vals[gi * 2], vals[gi * 2 + 1]
         c0 = 2 + gi * 4
-        if prev is None or cur is None:
-            diff = pct = None
-        elif kind == 'r':
-            diff, pct = round((cur - prev) * 100, 2), None
-        else:
-            diff = cur - prev
-            pct = safe_rate(diff, prev) if prev else None
+        diff, pct = _diff_pair(prev, cur, kind)
         if kind == 'f':
             prev = None if prev is None else round(prev, 2)
             cur = None if cur is None else round(cur, 2)
-            diff = None if diff is None else round(diff, 2)
-        for j, (v, fmt) in enumerate(((prev, val_fmt), (cur, val_fmt), (diff, diff_fmt),
-                                      (pct, '[Color10]+0.0%;[Red]-0.0%;0.0%'))):
+        for j, (v, fmt) in enumerate(((prev, val_fmt), (cur, val_fmt), (diff, diff_fmt), (pct, _PCT_FMT))):
             cell = ws.cell(row=row, column=c0 + j)
             cell.value = v
             cell.number_format = fmt
-            cell.font, cell.border = st['font'], st['border']
+            cell.font = st['cur'] if j == 1 else (st['bold'] if role == 'total' else st['font'])
     return row + 1
 
 
@@ -1771,38 +1819,7 @@ def fill_sheet_detail_products(wb, df_cur, df_prev, sacare_prices, dates: dict):
     vals = [int(a['NET'].sum()) for a in acc]
     row = _write_compare_row(ws, row, 'Apple 配件營業額合計（同第 6 頁）', vals, st)
 
-    # 4. 3PP 類別 4 → 類別 6 細分（類別 4 小計口徑同第 7/17 頁；列名取第 7 頁 B 欄）
-    #    類別 6 依今年累積營業額由大到小排，六期全為 0 的略過
-    row = _write_section(ws, row, '3PP 類別細分（營業額；粗體＝類別 4 小計，同第 7、17 頁）', st)
-    from openpyxl.styles import Alignment
-    indent = Alignment(horizontal='left', vertical='center', indent=2)
-    ws7 = wb['7.3PP配件比較'] if '7.3PP配件比較' in wb.sheetnames else None
-    tpp = [_non_sa(f, sa_codes) for f in frames]
-    tpp = [t[t['類別3代碼'] == 3003.0] for t in tpp]
-    pure = [0] * 6
-    for c4, excel_row in C4_ROWS.items():
-        sub = [t[t['類別4代碼'] == c4] for t in tpp]
-        vals = [int(t['NET'].sum()) for t in sub]
-        pure = [p + v for p, v in zip(pure, vals)]
-        if not any(vals) and not any(len(t) for t in sub):
-            continue
-        label = ws7.cell(row=excel_row, column=2).value if ws7 else f'類別4 {int(c4)}'
-        row = _write_compare_row(ws, row, f'{int(c4)} {label}', vals, st)
-        ws.cell(row=row - 1, column=1).font = st['bold']
-        by_c6 = [t.groupby(t['類別6代碼'].fillna(-1))['NET'].sum() for t in sub]
-        codes = set().union(*[set(b.index) for b in by_c6])
-        codes = sorted(codes, key=lambda c: -by_c6[5].get(c, 0))
-        for c6 in codes:
-            c6_vals = [int(b.get(c6, 0)) for b in by_c6]
-            if not any(c6_vals):
-                continue
-            row = _write_compare_row(ws, row, _c6_label(None if c6 == -1 else c6), c6_vals, st)
-            ws.cell(row=row - 1, column=1).alignment = indent
     mets = [calc_metrics(f, sacare_prices) for f in frames]
-    sa = [m['sa_rev'] for m in mets]
-    row = _write_compare_row(ws, row, 'SA CARE', sa, st)
-    row = _write_compare_row(ws, row, '純配件', pure, st)
-    row = _write_compare_row(ws, row, '加總（純配件＋SA CARE）', [p + s for p, s in zip(pure, sa)], st)
 
     # 5. 保固搭售明細（ACPP／SA Care 分開看）
     row = _write_section(ws, row, '保固搭售明細', st)
@@ -1822,6 +1839,105 @@ def fill_sheet_detail_products(wb, df_cur, df_prev, sacare_prices, dates: dict):
     row = _write_compare_row(ws, row, 'SA Care 營業額', [m['sa_rev'] for m in mets], st)
     row = _write_compare_row(ws, row, '保固營業額（AC+SA）', [m['warranty_rev'] for m in mets], st)
 
+
+
+TPP_GROUP_STARTS = (2, 10, 18)
+
+
+def _write_tpp_header(ws, st):
+    """第 19 頁表頭：每組 8 欄＝前期數量、前期營業額、本期數量、本期營業額、數量差異、數量差異%、金額差異、金額差異%。"""
+    from openpyxl.styles import Border
+    ws.merge_cells(start_row=1, start_column=1, end_row=2, end_column=1)
+    ws.cell(row=1, column=1).value = '項目'
+    for gi, (gname, a, b, _, _) in enumerate(DETAIL_GROUPS):
+        c0 = 2 + gi * 8
+        ws.merge_cells(start_row=1, start_column=c0, end_row=1, end_column=c0 + 7)
+        ws.cell(row=1, column=c0).value = gname
+        for j, lab in enumerate((f'{a}\n數量', f'{a}\n營業額', f'{b}\n數量', f'{b}\n營業額',
+                                 '數量差異', '數量差異%', '金額差異', '金額差異%')):
+            ws.cell(row=2, column=c0 + j).value = lab
+    for r in (1, 2):
+        for c in range(1, 26):
+            cell = ws.cell(row=r, column=c)
+            cell.font, cell.alignment = st['head'], st['center']
+            cell.border = Border(left=st['mid'] if c in TPP_GROUP_STARTS else None, bottom=st['hair'])
+            cell.fill = st['head_fill'] if c == 1 or r == 1 else st['group_fills'][(c - 2) // 8]
+            if r == 2 and c > 1:
+                cell.font = st['cur'] if (c - 2) % 8 in (2, 3) else st['bold']
+    ws.row_dimensions[1].height = 26
+    ws.row_dimensions[2].height = 36
+
+
+def _write_qty_rev_row(ws, row, label, qtys, revs, st, role=None):
+    """qtys／revs 各 6 個值（上週, 本週, 去年同期, 本月, 去年累積, 今年累積）。"""
+    role = role or ('total' if _is_total_label(label) else 'data')
+    _paint_row(ws, row, st, role, cols=range(1, 26), group_starts=TPP_GROUP_STARTS)
+    a = ws.cell(row=row, column=1)
+    a.value = label
+    a.font = st['bold'] if role == 'total' else st['font']
+    a.alignment = st['indent'] if role == 'data' else st['left']
+    diff_fmt = _FMT['n'][1]
+    for gi in range(3):
+        pq, cq, pr, cr = qtys[gi * 2], qtys[gi * 2 + 1], revs[gi * 2], revs[gi * 2 + 1]
+        dq, dqp = _diff_pair(pq, cq)
+        dr, drp = _diff_pair(pr, cr)
+        c0 = 2 + gi * 8
+        cells = ((pq, '#,##0'), (pr, '#,##0'), (cq, '#,##0'), (cr, '#,##0'),
+                 (dq, diff_fmt), (dqp, _PCT_FMT), (dr, diff_fmt), (drp, _PCT_FMT))
+        for j, (v, fmt) in enumerate(cells):
+            cell = ws.cell(row=row, column=c0 + j)
+            cell.value, cell.number_format = v, fmt
+            cell.font = st['cur'] if j in (2, 3) else (st['bold'] if role == 'total' else st['font'])
+    return row + 1
+
+
+def fill_sheet_tpp_detail(wb, df_cur, df_prev, sacare_prices, dates: dict):
+    """第 19 頁：3PP 類別 4 → 類別 6 細分，數量與營業額並列（類別 4 小計營業額口徑同第 7/17 頁；列名取第 7 頁 B 欄）。
+    類別 6 依今年累積營業額由大到小排，六期營業額全為 0 的略過。數量＝銷售＋尾款－銷退（含贈品）。"""
+    print(f'  Sheet 19: {TPP_DETAIL_SHEET}', flush=True)
+    sa_codes = set(sacare_prices.keys())
+    frames = _detail_frames(df_cur, df_prev, dates)
+    ws = _reset_detail_sheet(wb, TPP_DETAIL_SHEET)
+    for col in range(2, 26):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 11
+    st = _detail_styles()
+    _write_tpp_header(ws, st)
+    row = _write_section(ws, 3, '3PP 類別細分（粗體＝類別 4 小計，營業額同第 7、17 頁）', st,
+                         ncols=25, group_starts=TPP_GROUP_STARTS)
+    ws7 = wb['7.3PP配件比較'] if '7.3PP配件比較' in wb.sheetnames else None
+    tpp = [_non_sa(f, sa_codes) for f in frames]
+    tpp = [t[t['類別3代碼'] == 3003.0] for t in tpp]
+    units = lambda t: _net_units(t, pd.Series(True, index=t.index))
+    pure_q, pure_r = [0] * 6, [0] * 6
+    for c4, excel_row in C4_ROWS.items():
+        sub = [t[t['類別4代碼'] == c4] for t in tpp]
+        revs = [int(t['NET'].sum()) for t in sub]
+        qtys = [units(t) for t in sub]
+        pure_r = [p + v for p, v in zip(pure_r, revs)]
+        pure_q = [p + v for p, v in zip(pure_q, qtys)]
+        if not any(revs) and not any(len(t) for t in sub):
+            continue
+        label = ws7.cell(row=excel_row, column=2).value if ws7 else f'類別4 {int(c4)}'
+        row = _write_qty_rev_row(ws, row, f'{int(c4)} {label}', qtys, revs, st, role='total')
+        keyed = [t.assign(_c6=t['類別6代碼'].fillna(-1)) for t in sub]
+        by_c6 = [k.groupby('_c6')['NET'].sum() for k in keyed]
+        codes = sorted(set().union(*[set(b.index) for b in by_c6]), key=lambda c: -by_c6[5].get(c, 0))
+        for c6 in codes:
+            c6_r = [int(b.get(c6, 0)) for b in by_c6]
+            if not any(c6_r):
+                continue
+            c6_q = [units(k[k['_c6'] == c6]) for k in keyed]
+            row = _write_qty_rev_row(ws, row, _c6_label(None if c6 == -1 else c6), c6_q, c6_r, st)
+    mets = [calc_metrics(f, sacare_prices) for f in frames]
+    sa_r = [m['sa_rev'] for m in mets]
+    sa_q = [sum(m[k] for k in ('sa_cpu', 'sa_ipad', 'sa_iphone', 'sa_watch', 'sa_airpods')) for m in mets]
+    row = _write_qty_rev_row(ws, row, 'SA CARE', sa_q, sa_r, st, role='total')
+    row = _write_qty_rev_row(ws, row, '純配件', pure_q, pure_r, st, role='total')
+    row = _write_qty_rev_row(ws, row, '加總（純配件＋SA CARE）', [p + q for p, q in zip(pure_q, sa_q)],
+                             [p + r for p, r in zip(pure_r, sa_r)], st)
+    ws.cell(row=row + 1, column=1).value = ('數量＝銷售＋尾款－銷退的淨件數（含贈品）；SA CARE 數量＝各機種 SA Care 套數合計。'
+                                            '差異%＝差異÷前期。')
+    ws.cell(row=row + 1, column=1).font = st['font']
 
 
 def _doc_set(d, mask):
@@ -1850,7 +1966,7 @@ def _voucher_rows(d):
 
 
 def fill_sheet_detail_ops(wb, df_cur, df_prev, sacare_prices, dates: dict):
-    print(f'  Sheet 19: {DETAIL_SHEET_OPS}', flush=True)
+    print(f'  Sheet 20: {DETAIL_SHEET_OPS}', flush=True)
     sa_codes = set(sacare_prices.keys())
     frames = _detail_frames(df_cur, df_prev, dates)
     ws = _reset_detail_sheet(wb, DETAIL_SHEET_OPS)
@@ -1903,10 +2019,10 @@ def fill_sheet_detail_ops(wb, df_cur, df_prev, sacare_prices, dates: dict):
         row = _write_compare_row(ws, row, label, [p[i][1] for p in per_period], st)
 
 
-# ─── Sheet 20：3PP 熱門商品（本週／本月，同款不同色合併）─────────────────────────
+# ─── Sheet 21：3PP 熱門商品（本週／本月，同款不同色合併）─────────────────────────
 # 取該期 3PP 營業額前 10 大的「類別 4＋類別 6」，每組依數量列前 5 個系列。
 # ERP 商品主檔沒有系列／顏色欄位，系列由品名去掉顏色字判定（同類別 4＋類別 6 內品名相同＝同系列）。
-HOT_SERIES_SHEET  = '20.3PP 熱門商品'
+HOT_SERIES_SHEET  = '21.3PP 熱門商品'
 HOT_SERIES_GROUPS = 10   # 每期展開的類別數
 HOT_SERIES_TOP    = 5    # 每類列出的系列數
 SERIES_COLOR_RE = re.compile(
@@ -1954,13 +2070,15 @@ def _hot_series_block(ws, col0, title, d, c4_labels, st):
     row = 1
     ws.merge_cells(start_row=row, start_column=col0, end_row=row, end_column=col0 + 4)
     ws.cell(row=row, column=col0).value = title
-    for c in range(col0, col0 + 5):
-        cell = ws.cell(row=row, column=c)
-        cell.font, cell.fill, cell.alignment, cell.border = st['head'], st['head_fill'], st['center'], st['border']
+    cols = range(col0, col0 + 5)
+    _paint_row(ws, row, st, 'head', cols=cols, height=26)
+    for c in cols:
+        ws.cell(row=row, column=c).font, ws.cell(row=row, column=c).alignment = st['head'], st['center']
     row += 1
+    _paint_row(ws, row, st, 'head', cols=cols, fill=st['group_fills'][0], height=22)
     for j, h in enumerate(heads):
         cell = ws.cell(row=row, column=col0 + j)
-        cell.value, cell.font, cell.alignment, cell.border = h, st['bold'], st['center'], st['border']
+        cell.value, cell.font, cell.alignment = h, st['bold'], st['center']
     row += 1
 
     d = d.assign(_c6=d['類別6代碼'].fillna(-1))
@@ -1976,9 +2094,11 @@ def _hot_series_block(ws, col0, title, d, c4_labels, st):
         label = f"{c4_labels.get(c4, f'類別4 {int(c4)}')}｜{_c6_name(None if c6 == -1 else c6)}"
         qty_all = int(d.loc[(d['類別4代碼'] == c4) & (d['_c6'] == c6), '數量'].sum())
         vals = ['', label, None, qty_all, int(rev)]
+        _paint_row(ws, row, st, 'section', cols=cols, height=None)
         for j, v in enumerate(vals):
             cell = ws.cell(row=row, column=col0 + j)
-            cell.value, cell.font, cell.fill, cell.border = v, st['bold'], st['sec_fill'], st['border']
+            cell.value, cell.font = v, st['bold']
+            cell.alignment = left if j == 1 else st['center']
             if j >= 3:
                 cell.number_format = '#,##0'
         row += 1
@@ -1986,9 +2106,11 @@ def _hot_series_block(ws, col0, title, d, c4_labels, st):
         ser = ser[ser['qty'] > 0].sort_values(['qty', 'rev'], ascending=False).head(HOT_SERIES_TOP)
         for rank, (name, r) in enumerate(ser.iterrows(), start=1):
             vals = [rank, name, int(r['色數']), int(r['qty']), int(r['rev'])]
+            _paint_row(ws, row, st, 'data', cols=cols, height=None)
             for j, v in enumerate(vals):
                 cell = ws.cell(row=row, column=col0 + j)
-                cell.value, cell.font, cell.border = v, st['font'], st['border']
+                cell.value = v
+                cell.font = st['cur'] if j == 3 else st['font']
                 cell.alignment = left if j == 1 else st['center']
                 if j >= 3:
                     cell.number_format = '#,##0'
@@ -1997,7 +2119,7 @@ def _hot_series_block(ws, col0, title, d, c4_labels, st):
 
 
 def fill_sheet_hot_series(wb, df_cur, sacare_prices, dates: dict):
-    print(f'  Sheet 20: {HOT_SERIES_SHEET}', flush=True)
+    print(f'  Sheet 21: {HOT_SERIES_SHEET}', flush=True)
     sa_codes = set(sacare_prices.keys())
     ws = _reset_detail_sheet(wb, HOT_SERIES_SHEET, freeze='A3')
     for col, width in zip('ABCDEFGHIJK', (6, 48, 6, 8, 11, 3, 6, 48, 6, 8, 11)):
@@ -2016,14 +2138,14 @@ def fill_sheet_hot_series(wb, df_cur, sacare_prices, dates: dict):
     _hot_series_block(ws, 7, mo_title, tpp(dates['mo_start'], dates['mo_end']), c4_labels, st)
 
 
-# ─── Sheet 21–26：主機活動／新機上市追蹤／員工分析（分析檔）────────────────────
-PROMO_SHEET       = '21.主機活動'
-LAUNCH_SHEET      = '22.新機上市追蹤'
-EMP_AOV_SHEET     = '23.個人客單價'
-EMP_WARRANTY_SHEET = '24.個人保固附加率'
-EMP_MIX_SHEET     = '25.個人業績組成'
-EMP_TREND_SHEET   = '26.個人近8週走勢'
-ANALYSIS_SHEETS = [DETAIL_SHEET_PRODUCTS, DETAIL_SHEET_OPS, HOT_SERIES_SHEET, PROMO_SHEET, LAUNCH_SHEET,
+# ─── Sheet 22–27：主機活動／新機上市追蹤／員工分析（分析檔）────────────────────
+PROMO_SHEET       = '22.主機活動'
+LAUNCH_SHEET      = '23.新機上市追蹤'
+EMP_AOV_SHEET     = '24.個人客單價'
+EMP_WARRANTY_SHEET = '25.個人保固搭售率'
+EMP_MIX_SHEET     = '26.個人業績組成'
+EMP_TREND_SHEET   = '27.個人近8週走勢'
+ANALYSIS_SHEETS = [DETAIL_SHEET_PRODUCTS, TPP_DETAIL_SHEET, DETAIL_SHEET_OPS, HOT_SERIES_SHEET, PROMO_SHEET, LAUNCH_SHEET,
                    EMP_AOV_SHEET, EMP_WARRANTY_SHEET, EMP_MIX_SHEET, EMP_TREND_SHEET]
 
 # 分析用主機品類（台數口徑同 _device_stats：C3 或認證機品牌，退貨扣回）
@@ -2061,7 +2183,7 @@ def _c4_name(code) -> str:
 
 
 def _gift_mask(d):
-    """贈品列（同第 20 頁）：折扣 ≥ 80 或金額 0 的非退貨列。"""
+    """贈品列（同第 21 頁）：折扣 ≥ 80 或金額 0 的非退貨列。"""
     return (d['折扣'].fillna(0) >= 80) | ((d['NET'].abs() == 0) & (d['交易類型'] != '銷退'))
 
 
@@ -2084,20 +2206,24 @@ def _emp_frames(d):
 
 
 def _head_cells(ws, row, col0, labels, st, fill=None):
+    """標題格：深藍底白字（fill 指定時用淡色底黑字）；st['groups'] 為組別第一欄，左側畫中粗線。"""
     from openpyxl.cell.cell import MergedCell
+    from openpyxl.styles import Border
+    st['zebra'] = 0
     for j, lab in enumerate(labels):
-        cell = ws.cell(row=row, column=col0 + j)
+        col = col0 + j
+        cell = ws.cell(row=row, column=col)
         if not isinstance(cell, MergedCell):   # 合併儲存格只有左上角能寫值
             cell.value = lab
-        cell.font, cell.alignment, cell.border = st['head'], st['center'], st['border']
+        cell.font = st['bold'] if fill else st['head']
+        cell.alignment = st['center']
+        cell.border = Border(left=st['mid'] if col in st.get('groups', ()) else None, bottom=st['hair'])
         cell.fill = fill or st['head_fill']
 
 
 def _title_row(ws, row, text, ncols, st):
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=ncols)
-    for c in range(1, ncols + 1):
-        cell = ws.cell(row=row, column=c)
-        cell.fill, cell.border = st['sec_fill'], st['border']
+    _paint_row(ws, row, st, 'section', cols=range(1, ncols + 1), height=22)
     ws.cell(row=row, column=1).value = text
     ws.cell(row=row, column=1).font = st['bold']
     ws.cell(row=row, column=1).alignment = st['left']
@@ -2105,15 +2231,19 @@ def _title_row(ws, row, text, ncols, st):
 
 
 def _value_row(ws, row, label, vals, fmts, st, bold=False, colors=None):
-    """寫一列：A 欄標籤，B 起數值；fmts 對應每個值的 number_format；colors 對應字色（None＝預設）。"""
+    """寫一列：A 欄標籤，B 起數值；fmts 對應每個值的 number_format；colors 對應字色（None＝預設）。
+    bold＝合計列（淡藍底、上方中粗線），其餘為斑馬紋資料列。"""
     from openpyxl.styles import Font
+    _paint_row(ws, row, st, 'total' if bold else 'data', cols=range(1, len(vals) + 2),
+               group_starts=st.get('groups', ()))
     c = ws.cell(row=row, column=1)
-    c.value, c.font, c.alignment, c.border = label, st['bold'] if bold else st['font'], st['left'], st['border']
+    c.value, c.font = label, st['bold'] if bold else st['font']
+    c.alignment = st['left'] if bold else st['indent']
     for j, v in enumerate(vals):
         cell = ws.cell(row=row, column=2 + j)
-        cell.value, cell.number_format, cell.border = v, fmts[j], st['border']
+        cell.value, cell.number_format = v, fmts[j]
         color = colors[j] if colors else None
-        cell.font = Font(name='Arial', size=12, bold=bold, color=color) if color else (st['bold'] if bold else st['font'])
+        cell.font = Font(name='Arial', size=12, bold=True, color=color) if color else (st['bold'] if bold else st['font'])
     return row + 1
 
 
@@ -2121,19 +2251,20 @@ def _vs_color(v, avg):
     """高於門市平均綠色、低於紅色。"""
     if v is None or avg is None:
         return None
-    return '00B050' if v > avg else ('C00000' if v < avg else None)
+    return '2E7D32' if v > avg else ('C00000' if v < avg else None)
 
 
 def _period_label(name, s, e):
     return f'{name} {s:%m/%d}~{e:%m/%d}'
 
 
-# ── 21. 主機活動 ──
+# ── 22. 主機活動 ──
 def fill_sheet_promo(wb, df_cur, sacare_prices, dates: dict):
-    print(f'  Sheet 21: {PROMO_SHEET}', flush=True)
+    print(f'  Sheet 22: {PROMO_SHEET}', flush=True)
     ws = _reset_detail_sheet(wb, PROMO_SHEET, freeze='B3')
     ws.column_dimensions['A'].width = 64
     st = _detail_styles()
+    st['groups'] = (2, 4)
     sa_codes = set(sacare_prices.keys())
     wk = _non_sa(period(df_cur, dates['wk_start'], dates['wk_end']), sa_codes)
     mo = _non_sa(period(df_cur, dates['mo_start'], dates['mo_end']), sa_codes)
@@ -2153,8 +2284,7 @@ def fill_sheet_promo(wb, df_cur, sacare_prices, dates: dict):
         ws.merge_cells(start_row=1, start_column=c0, end_row=1, end_column=c0 + 1)
         _head_cells(ws, 1, c0, [_period_label(name, s, e), ''], st)
         _head_cells(ws, 2, c0, ['台數', '占比'], st, fill=st['group_fills'][gi])
-        for j in range(2):
-            ws.cell(row=2, column=c0 + j).font = st['bold']
+    ws.row_dimensions[1].height = 26
     row = 3
     for name, sel, c3 in ANALYSIS_LINES:
         mw, mm = _line_mask(wk, sel, c3), _line_mask(mo, sel, c3)
@@ -2164,24 +2294,27 @@ def fill_sheet_promo(wb, df_cur, sacare_prices, dates: dict):
         stats = [(a, _net_units(wk, mw & (lw == a)), _net_units(mo, mm & (lm == a))) for a in acts]
         stats = [s for s in stats if s[1] or s[2]]
         stats.sort(key=lambda s: (s[0] == '無活動', -s[2], -s[1], s[0]))
-        row = _value_row(ws, row, f'{name}（本週 {tw} 台／本月 {tm} 台）', [None] * 4,
-                         ['#,##0'] * 4, st, bold=True)
-        for c in range(1, 6):
-            ws.cell(row=row - 1, column=c).fill = st['sec_fill']
+        _paint_row(ws, row, st, 'section', cols=range(1, 6), group_starts=st['groups'], height=22)
+        for col, v in ((1, f'{name}（品類合計）'), (2, tw), (3, 1 if tw else None), (4, tm), (5, 1 if tm else None)):
+            cell = ws.cell(row=row, column=col)
+            cell.value, cell.font = v, st['bold']
+            cell.number_format = '0.0%' if col in (3, 5) else '#,##0'
+        row += 1
         for a, uw, um in stats:
             row = _value_row(ws, row, a, [uw, safe_rate(uw, tw) if tw else None, um, safe_rate(um, tm) if tm else None],
                              ['#,##0', '0.0%', '#,##0', '0.0%'], st)
-    ws.cell(row=row + 1, column=1).value = '活動細項取 ERP 子活動說明；台數含尾款、扣除退貨，同第 1、19 頁口徑。'
+    ws.cell(row=row + 1, column=1).value = '活動細項取 ERP 子活動說明；台數含尾款、扣除退貨，同第 1、18 頁口徑。'
     ws.cell(row=row + 1, column=1).font = st['font']
 
 
-# ── 22. 新機上市追蹤 ──
+# ── 23. 新機上市追蹤 ──
 def fill_sheet_launch(wb, df_track, dates: dict):
-    print(f'  Sheet 22: {LAUNCH_SHEET}', flush=True)
+    print(f'  Sheet 23: {LAUNCH_SHEET}', flush=True)
     ws = _reset_detail_sheet(wb, LAUNCH_SHEET, freeze='A1')
     for col, width in zip('ABCDEFGH', (10, 16, 11, 11, 16, 11, 11, 11)):
         ws.column_dimensions[col].width = width
     st = _detail_styles()
+    st['groups'] = (2, 5, 8)
     report_end = pd.Timestamp(dates['wk_end'])
     d = df_track if df_track is not None else pd.DataFrame(columns=['單據日期'])
 
@@ -2237,12 +2370,13 @@ def fill_sheet_launch(wb, df_track, dates: dict):
     ws.cell(row=row, column=1).font = st['font']
 
 
-# ── 23. 個人客單價 ──
+# ── 24. 個人客單價 ──
 def fill_sheet_emp_aov(wb, df_cur, sacare_prices, dates: dict):
-    print(f'  Sheet 23: {EMP_AOV_SHEET}', flush=True)
+    print(f'  Sheet 24: {EMP_AOV_SHEET}', flush=True)
     ws = _reset_detail_sheet(wb, EMP_AOV_SHEET, freeze='B3')
     ws.column_dimensions['A'].width = 22
     st = _detail_styles()
+    st['groups'] = (2, 5, 8, 11)
     sa_codes = set(sacare_prices.keys())
     groups = [('原廠（主機＋原廠配件）', [3001.0, 3002.0]), ('3PP', [3003.0])]
 
@@ -2264,8 +2398,6 @@ def fill_sheet_emp_aov(wb, df_cur, sacare_prices, dates: dict):
             ws.merge_cells(start_row=1, start_column=c0, end_row=1, end_column=c0 + 2)
             _head_cells(ws, 1, c0, [f'{_period_label(pname, s, e)}｜{gname}', '', ''], st)
             _head_cells(ws, 2, c0, ['筆數', '業績', '客單價'], st, fill=st['group_fills'][pi])
-            for j in range(3):
-                ws.cell(row=2, column=c0 + j).font = st['bold']
     for c in range(2, 14):
         ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 12
     ws.row_dimensions[1].height = 36
@@ -2290,6 +2422,7 @@ def fill_sheet_emp_aov(wb, df_cur, sacare_prices, dates: dict):
         rev = g.groupby('類別4代碼')['NET'].sum().sort_values(ascending=False)
         c4s = [c for c, v in rev.items() if v > 0][:top]
         row += 1
+        st['groups'] = ()
         row = _title_row(ws, row, f'本月 類別 4 細項平均單價｜{gname}（金額÷件數，不含贈品／訂金／尾款；綠＝高於門市、紅＝低於門市）',
                          max(len(c4s) + 1, 13), st)
         _head_cells(ws, row, 1, ['員工'] + [_c4_name(c) for c in c4s], st)
@@ -2302,23 +2435,24 @@ def fill_sheet_emp_aov(wb, df_cur, sacare_prices, dates: dict):
             row = _value_row(ws, row, label, vals, ['#,##0'] * len(vals), st, bold=label == '門市合計', colors=colors)
         qty = [int(g.loc[(g['類別4代碼'] == c) & ~_gift_mask(g), '數量'].sum()) for c in c4s]
         row = _value_row(ws, row, '門市件數', qty, ['#,##0'] * len(qty), st)
-    ws.cell(row=row + 1, column=1).value = ('筆數＝成交單（有銷售列且非整單退貨，同第 19 頁）中含該類商品的單數；業績＝這些單裡該類商品的金額；'
+    ws.cell(row=row + 1, column=1).value = ('筆數＝成交單（有銷售列且非整單退貨，同第 20 頁）中含該類商品的單數；業績＝這些單裡該類商品的金額；'
                                             '客單價＝業績÷筆數。綠＝高於門市、紅＝低於門市。')
     ws.cell(row=row + 1, column=1).font = st['font']
 
 
-# ── 24. 個人保固附加率 ──
+# ── 25. 個人保固搭售率 ──
 def fill_sheet_emp_warranty(wb, df_cur, sacare_prices, dates: dict):
-    print(f'  Sheet 24: {EMP_WARRANTY_SHEET}', flush=True)
+    print(f'  Sheet 25: {EMP_WARRANTY_SHEET}', flush=True)
     ws = _reset_detail_sheet(wb, EMP_WARRANTY_SHEET, freeze='B1')
     ws.column_dimensions['A'].width = 22
     for c in range(2, 2 + 4 * len(WARRANTY_DEVICES)):
         ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 9
     st = _detail_styles()
+    st['groups'] = tuple(2 + 4 * i for i in range(len(WARRANTY_DEVICES)))
     row = 1
     for pname, s, e in (('本週', dates['wk_start'], dates['wk_end']), ('本月', dates['mo_start'], dates['mo_end'])):
         f = period(df_cur, s, e)
-        row = _title_row(ws, row, f'{_period_label(pname, s, e)}（附加率＝(AppleCare＋SA Care) 套數 ÷ 主機台數；綠＝高於門市、紅＝低於門市）',
+        row = _title_row(ws, row, f'{_period_label(pname, s, e)}（搭售率＝(AppleCare＋SA Care) 套數 ÷ 主機台數；綠＝高於門市、紅＝低於門市）',
                          1 + 4 * len(WARRANTY_DEVICES), st)
         _head_cells(ws, row, 1, ['員工'], st)
         for i, (dev, *_rest) in enumerate(WARRANTY_DEVICES):
@@ -2327,9 +2461,7 @@ def fill_sheet_emp_warranty(wb, df_cur, sacare_prices, dates: dict):
         row += 1
         _head_cells(ws, row, 1, [''], st)
         for i in range(len(WARRANTY_DEVICES)):
-            _head_cells(ws, row, 2 + i * 4, ['台數', 'AC', 'SA', '附加率'], st, fill=st['group_fills'][i % 3])
-            for j in range(4):
-                ws.cell(row=row, column=2 + i * 4 + j).font = st['bold']
+            _head_cells(ws, row, 2 + i * 4, ['台數', 'AC', 'SA', '搭售率'], st, fill=st['group_fills'][i % 3])
         row += 1
         store = calc_metrics(f, sacare_prices)
         store_rate = [safe_rate(store[ac] + store[sa], store[u]) if store[u] else None
@@ -2344,18 +2476,19 @@ def fill_sheet_emp_warranty(wb, df_cur, sacare_prices, dates: dict):
                 colors += [None, None, None, None if label == '門市合計' else _vs_color(rate, store_rate[i])]
             row = _value_row(ws, row, label, vals, fmts, st, bold=label == '門市合計', colors=colors)
         row += 1
-    ws.cell(row=row, column=1).value = '台數、AppleCare（ACPP）與 SA Care 套數同第 19 頁「保固（AC+SA）」口徑，依結帳員工歸屬，退貨扣回。'
+    ws.cell(row=row, column=1).value = '台數、AppleCare（ACPP）與 SA Care 套數同第 18 頁「保固搭售明細」口徑，依結帳員工歸屬，退貨扣回。'
     ws.cell(row=row, column=1).font = st['font']
 
 
-# ── 25. 個人業績組成 ──
+# ── 26. 個人業績組成 ──
 def fill_sheet_emp_mix(wb, df_cur, sacare_prices, dates: dict):
-    print(f'  Sheet 25: {EMP_MIX_SHEET}', flush=True)
+    print(f'  Sheet 26: {EMP_MIX_SHEET}', flush=True)
     ws = _reset_detail_sheet(wb, EMP_MIX_SHEET, freeze='B1')
     ws.column_dimensions['A'].width = 22
     for c in range(2, 11):
         ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 13
     st = _detail_styles()
+    st['groups'] = (2, 7)
     cats = [('主機', 'rev_3001'), ('原廠配件（含 AirPods）', 'rev_3002'), ('3PP', 'rev_3003'), ('保固（AC+SA）', 'warranty_rev')]
     row = 1
     for pname, s, e in (('本週', dates['wk_start'], dates['wk_end']), ('本月', dates['mo_start'], dates['mo_end'])):
@@ -2380,21 +2513,22 @@ def fill_sheet_emp_mix(wb, df_cur, sacare_prices, dates: dict):
     ws.cell(row=row, column=1).font = st['font']
 
 
-# ── 26. 個人近 8 週走勢 ──
+# ── 27. 個人近 8 週走勢 ──
 def fill_sheet_emp_trend(wb, df_cur, sacare_prices, dates: dict, bundle_weeks=None, fiscal_start=None):
     """bundle_weeks：[(週起日, 搭售統計 rows)…] 由舊到新 8 週；None＝搭售率留空。"""
-    print(f'  Sheet 26: {EMP_TREND_SHEET}', flush=True)
+    print(f'  Sheet 27: {EMP_TREND_SHEET}', flush=True)
     ws = _reset_detail_sheet(wb, EMP_TREND_SHEET, freeze='C2')
     ws.column_dimensions['A'].width = 22
     ws.column_dimensions['B'].width = 14
     for c in range(3, 13):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 11
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 13
     st = _detail_styles()
     starts = [dates['wk_start'] - timedelta(days=7 * i) for i in range(7, -1, -1)]
     labels = []
     for s in starts:
         wk = f'W{compute_fiscal_week_number(s, fiscal_start)[1]}\n' if fiscal_start else ''
         labels.append(f'{wk}{s:%m/%d}~{s + timedelta(days=6):%m/%d}')
+    st['groups'] = (3, 11)
     _head_cells(ws, 1, 1, ['員工', '項目'] + labels + ['8 週平均', '本週 vs 平均'], st)
     ws.row_dimensions[1].height = 36
     frames = [period(df_cur, s, s + timedelta(days=6)) for s in starts]
@@ -2412,30 +2546,49 @@ def fill_sheet_emp_trend(wb, df_cur, sacare_prices, dates: dict, bundle_weeks=No
         ss = sum(r[k]['s'] for r in rows for k in ('cpu', 'iphone', 'ipad', 'watch', 'airpods'))
         return round(ss / sm, 2) if sm else None
 
-    items = [('業績', '#,##0', lambda i, f, code: calc_metrics(f, sacare_prices)['total_rev']),
-             ('3PP 搭售率', '0.00', lambda i, f, code: bundle_rate(i, code)),
-             ('3PP 平均單價', '#,##0', lambda i, f, code: _avg_price(_non_sa(f, sa_codes)[lambda x: x['類別3代碼'] == 3003.0]))]
+    def warranty_rate(m):
+        units = sum(m[u] for _, u, _, _ in WARRANTY_DEVICES)
+        sets = sum(m[ac] + m[sa] for _, _, ac, sa in WARRANTY_DEVICES)
+        return safe_rate(sets, units) if units else None
+
+    # (項目, 數值格式, 差值格式, 取值)；m＝該人該週的 calc_metrics（每人每週只算一次）
+    items = [('業績', '#,##0', '[Color10]+#,##0;[Red]-#,##0;0', lambda i, f, m, code: m['total_rev']),
+             ('3PP 搭售率', '0.00', '[Color10]+0.00;[Red]-0.00;0.00', lambda i, f, m, code: bundle_rate(i, code)),
+             ('保固搭售率', '0.0%', '[Color10]+0.0"pp";[Red]-0.0"pp";0.0"pp"', lambda i, f, m, code: warranty_rate(m)),
+             ('3PP 平均單價', '#,##0', '[Color10]+#,##0;[Red]-#,##0;0',
+              lambda i, f, m, code: _avg_price(_non_sa(f, sa_codes)[lambda x: x['類別3代碼'] == 3003.0]))]
+    from openpyxl.styles import Border
     row = 2
     people = [(_emp_label(code, name), code) for code, name in EMPLOYEES] + [('門市合計', None)]
-    for label, code in people:
-        for k, (item, fmt, fn) in enumerate(items):
-            vals = [fn(i, f if code is None else f[f['員工代碼'] == code], code) for i, f in enumerate(frames)]
+    for pi, (label, code) in enumerate(people):
+        fs = [f if code is None else f[f['員工代碼'] == code] for f in frames]
+        ms = [calc_metrics(f, sacare_prices) for f in fs]
+        # 每人一組 4 列同底色、員工之間交替；門市合計用淡藍；組與組之間中粗線
+        fill = st['total_fill'] if code is None else (st['zebra_fill'] if pi % 2 else st['no_fill'])
+        for k, (item, fmt, diff_fmt, fn) in enumerate(items):
+            vals = [fn(i, f, m, code) for i, (f, m) in enumerate(zip(fs, ms))]
             got = [v for v in vals if v is not None]
             avg = sum(got) / len(got) if got else None
             cur = vals[-1]
             diff = (cur - avg) if (cur is not None and avg is not None) else None
-            cells = [label if k == 0 else '', item] + vals + [round(avg, 2) if avg is not None else None, diff]
+            if diff is not None:   # 比率差以百分點顯示；其餘四捨五入，避免非 Excel 的預覽顯示一長串小數
+                diff = round(diff * 100, 1) if fmt == '0.0%' else (round(diff, 2) if fmt == '0.00' else int(round(diff)))
+            cells = [label if k == 0 else '', item] + vals + [avg, diff]
             for j, v in enumerate(cells):
                 cell = ws.cell(row=row, column=1 + j)
-                cell.value, cell.border = v, st['border']
-                cell.font = st['bold'] if (code is None or j == 0) else st['font']
-                if j >= 2:
-                    cell.number_format = fmt if j < 11 else (
-                        '[Color10]+0.00;[Red]-0.00;0.00' if fmt == '0.00' else '[Color10]+#,##0;[Red]-#,##0;0')
+                cell.value, cell.fill = v, fill
+                cell.border = Border(top=st['mid'] if k == 0 else None, bottom=st['hair'],
+                                     left=st['mid'] if j in (2, 10) else None)
+                cell.font = st['cur'] if j == 9 else (st['bold'] if (code is None or j <= 1) else st['font'])
+                if j <= 1:
+                    cell.alignment = st['left']
+                else:
+                    cell.number_format = diff_fmt if j == 11 else fmt
+            ws.row_dimensions[row].height = 20
             row += 1
-        ws.merge_cells(start_row=row - 3, start_column=1, end_row=row - 1, end_column=1)
-        ws.cell(row=row - 3, column=1).alignment = st['left']
+        # 不合併 A 欄：直向合併在 Mac 預覽（QuickLook／Numbers）會把後面幾列的格子往右錯位
     ws.cell(row=row + 1, column=1).value = ('業績同第 6 頁總營業額口徑；3PP 搭售率同第 10 頁（配件數÷搭售台數）；'
+                                            '保固搭售率＝(AppleCare＋SA Care) 套數÷主機台數（同第 25 頁）；'
                                             '3PP 平均單價＝3PP 金額÷件數（不含贈品／訂金／尾款）。最右欄＝本週減 8 週平均。')
     ws.cell(row=row + 1, column=1).font = st['font']
 
@@ -2582,6 +2735,7 @@ def main():
     fill_sheet10(wb['16.月報YOY'], df_cur, df_prev, sacare_prices, dates)
     fill_sheet11(wb['17.3PP YOY'], df_cur, df_prev, sacare_prices, dates)
     fill_sheet_detail_products(wb, df_cur, df_prev, sacare_prices, dates)
+    fill_sheet_tpp_detail(wb, df_cur, df_prev, sacare_prices, dates)
     fill_sheet_detail_ops(wb, df_cur, df_prev, sacare_prices, dates)
     fill_sheet_hot_series(wb, df_cur, sacare_prices, dates)
 
