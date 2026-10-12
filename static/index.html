@@ -80,6 +80,14 @@
         </div>
         <p class="footnote" id="empCountHint">用於人均產值（總營業額 / 編制人數）。會記住上次輸入。</p>
 
+        <div class="group">
+          <div class="row">
+            <label class="row-label" for="mysetupFile">Personal Setup Excel<span class="row-sub">13/14 頁 MySetup</span></label>
+            <div class="row-control"><input type="file" id="mysetupFile" accept=".xlsx"></div>
+          </div>
+        </div>
+        <p class="footnote" id="mysetupFileHint">選填。從 Personal Setup 匯出的 Excel，依提交時間統計本週／本月 MySetup 提交數量；未選檔則兩欄留空。</p>
+
         <div class="actions">
           <button class="primary-btn" id="generateBtn" type="button">產生報表</button>
         </div>
@@ -173,6 +181,36 @@
         </details>
       </section>
 
+      <section class="card" id="mysetupCard" style="--i:3">
+        <details class="card-collapse" id="msDetails">
+        <summary>
+          <span class="chevron"></span>
+          <span class="card-title collapse-title">MySetup 名稱對照<span class="card-tag">Personal Setup</span></span>
+          <span class="status-pill" id="msBadge">…</span>
+        </summary>
+        <p class="card-desc">Excel 的 Staff Name 會先自動對 ERP 員工中文名／英文名。對不上的名字在這裡指定員工，儲存後下次產報自動套用；這裡設定的規則優先於自動對應。</p>
+
+        <h3 class="ms-subtitle" id="msUnmatchedTitle" hidden>上次產報未對上的名字</h3>
+        <div class="group" id="msUnmatchedGroup" hidden></div>
+
+        <h3 class="ms-subtitle">已設定的對照規則</h3>
+        <div class="group" id="msRulesGroup"></div>
+
+        <div class="group ms-add">
+          <div class="row">
+            <input type="text" id="msNewName" placeholder="Excel 上的名字，例如：王 CSR 彥翔">
+            <select id="msNewCode" aria-label="對應員工"></select>
+            <button class="ghost-btn" id="msAddBtn" type="button">新增</button>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary-btn" id="msSaveBtn" type="button">儲存對照</button>
+          <button class="ghost-btn" id="msReloadBtn" type="button">重新載入</button>
+        </div>
+        <p class="footnote" id="msStatus"></p>
+        </details>
+      </section>
+
       <section class="card" id="progressCard" hidden>
         <h2 class="card-title">產生進度</h2>
         <div class="progress-bar-wrap">
@@ -185,6 +223,7 @@
       <section class="card" id="downloadCard" hidden>
         <h2 class="card-title">下載</h2>
         <p id="downloadInfo"></p>
+        <p class="ms-notice" id="msNotice" hidden></p>
         <div class="actions">
           <button class="primary-btn" id="downloadBtn" type="button">下載 Excel</button>
           <button class="ghost-btn" id="showLogBtn" type="button">顯示 log</button>

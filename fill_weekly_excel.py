@@ -103,7 +103,7 @@ MONTHLY_FOCUS_LABEL  = '品牌 496 Woongjin（ARpedia 繪本：Hello Nature／St
 SPEAKERS_C4          = {4013.0}   # 3PP 藍牙喇叭（同第 7 頁 3PP配件比較的 Speakers 列）
 SPEAKERS_EXCL_BRANDS = {453.0}    # 第 4 頁「排除 Momax」區塊：Momax 喇叭皆掛品牌 453
 
-# ─── Sheet 13/14 X 欄「服務費」──────────────────────────────────────────────
+# ─── Sheet 13/14 Y 欄「服務費」──────────────────────────────────────────────
 # 99900947 Mac資料轉移/重置系統、99900948 iOS資料轉移/重置系統，統計含稅金額。
 SERVICE_FEE_SKUS = {'99900947', '99900948'}
 
@@ -1129,8 +1129,8 @@ def fill_sheet78(ws7, ws8, df_cur, sacare_prices, dates: dict):
         ]
         for col_offset, v in enumerate(vals):
             ws.cell(row=row, column=col_offset + 2).value = v
-        # X(24) 服務費金額（含稅，銷退已由 NET 帶負號扣回）
-        ws.cell(row=row, column=24).value = m['service_fee'] or None
+        # Y(25) 服務費金額（含稅，銷退已由 NET 帶負號扣回）；W/X 為 MySetup，由 server 依上傳的 Personal Setup Excel 填入
+        ws.cell(row=row, column=25).value = m['service_fee'] or None
 
     for i, (code, _) in enumerate(EMPLOYEES):
         row = i + 3  # data starts at row 3
@@ -1142,7 +1142,7 @@ def fill_sheet78(ws7, ws8, df_cur, sacare_prices, dates: dict):
         total_row = 3 + len(EMPLOYEES)
         emp_rows  = range(3, total_row)
         # Count columns: B(2),C(3),D(4), F(6),G(7),H(8), J(10),K(11),L(12), O(15),P(16),Q(17), S(19),T(20),U(21)
-        count_cols = [2,3,4, 6,7,8, 10,11,12, 15,16,17, 19,20,21, 24]
+        count_cols = [2,3,4, 6,7,8, 10,11,12, 15,16,17, 19,20,21, 25]
         totals = {}
         for col in count_cols:
             totals[col] = sum(ws.cell(row=r, column=col).value or 0 for r in emp_rows)

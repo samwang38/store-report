@@ -7,6 +7,7 @@ EPB 即時查詢免登入，採用「選日期 → 背景產生 → 下載」的
 報表核心（EPB 查詢 / 13 張填表 / 個人項目動態填入）移植自 live-report-app，
 邏輯零改動；本檔僅去掉登入閘、改成非同步任務佇列、加上免登入門市下拉。
 """
+import base64
 import copy
 import csv
 import importlib.util
@@ -33,6 +34,8 @@ try:
 except Exception as _exc:  # 缺套件等情況下仍讓 server 正常啟動
     traffic_mod = None
     _TRAFFIC_IMPORT_ERROR = str(_exc)
+
+import mysetup
 
 try:
     import dss_client as dss_mod
@@ -484,6 +487,101 @@ def load_c6_names():
                 continue
             _C6_NAME_CACHE[code] = text(row[1]).split("(")[0].strip()
     return dict(_C6_NAME_CACHE)
+
+
+def epb_emp_names(codes):
+    """EP_EMP 員工中文名／英文名：{code: (name, name_lang)}。ep_user 沒有工讀生，所以用 EP_EMP。
+    同一人可能多列（有的英文名空白），合併取非空值。"""
+    codes = sorted({text(c) for c in codes if text(c)})
+    if not codes:
+        return {}
+    headers, rows = run_remote(
+        "select distinct emp_id, name, name_lang from ep_emp where emp_id in ("
+        + ",".join(quote_sql(c) for c in codes) + ")", timeout=60)
+    result = {}
+    for row in rows:
+        code, name, name_lang = text(row[0]), text(row[1]), text(row[2])
+        cn, en = result.get(code, ("", ""))
+        result[code] = (cn or name, en or name_lang)
+    return result
+
+
+def store_employee_options(shop_id, days=90):
+    """MySetup 設定卡的員工下拉：近 days 天在本店有交易的員工（SA999 總公司沖帳除外）。"""
+    since = (date.today() - timedelta(days=days)).isoformat()
+    headers, rows = run_remote(
+        "select distinct emp_id1 from poslinev_bi where org_id = '01' and shop_id = "
+        + quote_sql(shop_id)
+        + f" and doc_date >= to_date('{since}', 'yyyy-mm-dd')", timeout=120)
+    codes = [text(r[0]) for r in rows if text(r[0]) and text(r[0]) != engine.VOUCHER_SETTLE_EMP]
+    names = epb_emp_names(codes)
+    return [
+        {"code": c, "name": names.get(c, ("", ""))[0], "nameLang": names.get(c, ("", ""))[1]}
+        for c in sorted(codes)
+    ]
+
+
+MYSETUP_SHEETS = (("13.個人週主機", "wk_start", "wk_end"), ("14.個人月主機", "mo_start", "mo_end"))
+MYSETUP_COUNT_COL, MYSETUP_RATE_COL = 23, 24   # W 提交數量、X 提交率
+MYSETUP_DEVICE_COLS = (2, 6, 10, 15)           # 提交率分母：CPU＋iPad＋iPhone＋Watch 台數
+
+
+def _sheet_device_total(ws, row):
+    return sum(ws.cell(row=row, column=c).value or 0 for c in MYSETUP_DEVICE_COLS)
+
+
+def fill_mysetup_sheets(wb, shop_id, records, employees, dates, log=lambda m: None):
+    """第 13/14 頁 W/X 欄：依 Submission Time 切本週／本月，對應到員工列；對不上的名字補列在加總列上方。"""
+    names = [r["name"] for r in records]
+    try:
+        emp_names = epb_emp_names([code for code, _ in employees])
+    except Exception as exc:  # 名字查不到時只剩人工對照規則可用
+        emp_names = {}
+        log(f"  ⚠ 員工姓名（EP_EMP）查詢失敗，MySetup 只套用人工對照規則：{exc}")
+    mapping = mysetup.match_names(names, emp_names, mysetup.alias_codes(shop_id))
+    by_how = {}
+    for code, how in mapping.values():
+        by_how[how] = by_how.get(how, 0) + 1
+    log("  名字對應：" + "、".join(f"{k} {v} 人" for k, v in by_how.items()))
+
+    row_of = {code: i for i, (code, _) in enumerate(employees)}
+    display_of = dict(employees)
+    all_unmatched = {}
+    for sheet_name, start_key, end_key in MYSETUP_SHEETS:
+        ws = wb[sheet_name]
+        counts, unmatched, skipped = mysetup.summarize(records, mapping, dates[start_key], dates[end_key])
+        for name, n in unmatched.items():   # 週跨月時本週可能有本月沒有的名字，兩頁取聯集（取較大筆數）
+            all_unmatched[name] = max(all_unmatched.get(name, 0), n)
+        total_row = next(r for r in range(3, ws.max_row + 1) if text(ws.cell(row=r, column=1).value) == "加總")
+        # 不在報表員工列的：人工指定到本月沒交易的員工、或還沒對上的原始名字 → 補列在加總列上方
+        extra = [(display_of.get(code, code), n) for code, n in counts.items() if code not in row_of]
+        extra += [(f"{name}（未對上）", n) for name, n in unmatched.items()]
+        if extra:
+            ws.insert_rows(total_row, len(extra))
+            for i in range(len(extra)):
+                copy_row_style(ws, 3, total_row + i, ws.max_column)
+            total_row += len(extra)
+        for code, idx in row_of.items():
+            n = counts.get(code, 0)
+            ws.cell(row=3 + idx, column=MYSETUP_COUNT_COL).value = n or None
+            ws.cell(row=3 + idx, column=MYSETUP_RATE_COL).value = (
+                engine.safe_rate(n, _sheet_device_total(ws, 3 + idx)) if n else None)
+        for i, (label, n) in enumerate(extra):
+            row = total_row - len(extra) + i
+            ws.cell(row=row, column=1).value = label
+            ws.cell(row=row, column=MYSETUP_COUNT_COL).value = n
+        total = sum(ws.cell(row=r, column=MYSETUP_COUNT_COL).value or 0 for r in range(3, total_row))
+        ws.cell(row=total_row, column=MYSETUP_COUNT_COL).value = total or None
+        ws.cell(row=total_row, column=MYSETUP_RATE_COL).value = (
+            engine.safe_rate(total, _sheet_device_total(ws, total_row)) if total else None)
+        msg = f"  {sheet_name}：MySetup {total} 筆"
+        if unmatched:
+            msg += "；⚠ 未對上：" + "、".join(f"{k}（{v} 筆）" for k, v in unmatched.items())
+        if skipped:
+            msg += "；不計入：" + "、".join(f"{k}（{v} 筆）" for k, v in skipped.items())
+        log(msg)
+    mysetup.save_unmatched(shop_id, all_unmatched, dates["mo_end"].isoformat())
+    return len(all_unmatched)
 
 
 def load_sacare_cached():
@@ -1412,6 +1510,14 @@ def build_report_workbook(payload, log=lambda m: None):
     dates["ytd_end"] = yoy_end if payload.get("yoyEnd") else dates["mo_end"]
     if yoy_end != wk_end:
         log(f"年對年截止日（自訂）：{yoy_end}（對比 {yoy_end.year-1} 年同期）")
+    mysetup_records = None
+    if payload.get("mysetupFile"):
+        try:
+            raw = str(payload["mysetupFile"])
+            mysetup_records = mysetup.parse_personal_setup(base64.b64decode(raw.split("base64,", 1)[-1]))
+            log(f"讀取 Personal Setup Excel：{len(mysetup_records)} 筆")
+        except Exception as exc:  # 檔案有問題不擋產報，MySetup 欄留空
+            log(f"  ⚠ Personal Setup Excel 無法讀取，MySetup 欄留空：{exc}")
     wb = openpyxl.load_workbook(TEMPLATE_PATH)
     validate_template_sheet_order(wb)
     template_employees = engine.load_employees(wb) or engine.EMPLOYEES
@@ -1504,6 +1610,10 @@ def build_report_workbook(payload, log=lambda m: None):
     else:
         log("未填入搭售統計，清空 10-11 模板預設值…")
         clear_bundle_sheets(wb)
+
+    if mysetup_records is not None:
+        log("填入 13-14 MySetup 提交數量…")
+        source_meta["mysetupUnmatched"] = fill_mysetup_sheets(wb, shop_id, mysetup_records, employees, dates, log=log)
 
     source_meta["employeeCount"] = len(employees)
     source_meta["employees"] = [{"code": code, "name": name} for code, name in employees]
@@ -1705,6 +1815,22 @@ class Handler(SimpleHTTPRequestHandler):
                 has_site = bool(traffic_mod and traffic_mod.site_id_for_shop(shop_id))
                 self.send_json(200, {"employeeCount": emp, "hasSiteId": has_site})
                 return
+            if p.path == "/api/mysetup/aliases":
+                shop_id = safe_shop_id(qs.get("shopId", [""])[0] or DEFAULT_SHOP_ID)
+                resp = {
+                    "rules": list(mysetup.get_aliases(shop_id).values()),
+                    "unmatched": mysetup.get_unmatched(shop_id),
+                    "skip": mysetup.SKIP,
+                }
+                # ?employees=0 只回規則與未對上清單（徽章用，不連 EPB）
+                if qs.get("employees", ["1"])[0] != "0":
+                    try:
+                        resp["employees"] = store_employee_options(shop_id)
+                    except Exception as exc:  # 連不到 EPB 時仍可看／刪規則，下拉改用規則裡已有的代碼
+                        resp["employees"] = []
+                        resp["employeesError"] = str(exc)
+                self.send_json(200, resp)
+                return
             if p.path == "/api/status":
                 job_id = qs.get("jobId", [""])[0]
                 with _LOCK:
@@ -1719,6 +1845,8 @@ class Handler(SimpleHTTPRequestHandler):
                 }
                 if job["status"] == "error":
                     resp["error"] = job.get("error", "未知錯誤")
+                if job["status"] == "done":
+                    resp["mysetupUnmatched"] = (job.get("meta") or {}).get("sourceMeta", {}).get("mysetupUnmatched")
                 self.send_json(200, resp)
                 return
             if p.path == "/api/download":
@@ -1808,6 +1936,20 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(200, dss_mod.submit_otp(str(body.get("code", ""))))
                 return
             self.send_json(404, {"error": "Not found"})
+            return
+        if p.path == "/api/mysetup/aliases":
+            try:
+                body = self.read_body()
+                shop_id = safe_shop_id(body.get("shopId") or DEFAULT_SHOP_ID)
+                rules = body.get("rules")
+                if not isinstance(rules, list):
+                    raise ValueError("rules 必須是陣列")
+            except Exception as e:
+                self.send_json(400, {"error": f"參數錯誤: {e}"})
+                return
+            saved = mysetup.save_aliases(shop_id, rules)
+            self.send_json(200, {"ok": True, "rules": list(saved.values()),
+                                 "unmatched": mysetup.get_unmatched(shop_id)})
             return
         if p.path == "/api/shoppertrak/credentials":
             if traffic_mod is None:

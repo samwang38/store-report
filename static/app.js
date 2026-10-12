@@ -117,6 +117,7 @@
       }
       if (data.default) shopSelect.value = data.default;
       await loadShopConfig();
+      loadMysetup(false);
     } catch (e) {
       console.warn('無法取得門市清單', e);
     }
@@ -141,6 +142,7 @@
     // 設定卡與來客數／DSS 設定一起顯示／隱藏
     shoppertrakCard.hidden = (card !== configCard);
     dssCard.hidden = (card !== configCard);
+    mysetupCard.hidden = (card !== configCard);
   }
 
   function setBadge(el, text, cls) {
@@ -437,6 +439,155 @@
     return 4;
   }
 
+
+  // ─── MySetup 名稱對照（Personal Setup Excel 的 Staff Name → 員工代碼）──────
+  const mysetupCard = $('mysetupCard');
+  const mysetupFile = $('mysetupFile');
+  const msDetails   = $('msDetails');
+  const msBadge     = $('msBadge');
+  const msUnmatchedTitle = $('msUnmatchedTitle');
+  const msUnmatchedGroup = $('msUnmatchedGroup');
+  const msRulesGroup = $('msRulesGroup');
+  const msNewName   = $('msNewName');
+  const msNewCode   = $('msNewCode');
+  const msAddBtn    = $('msAddBtn');
+  const msSaveBtn   = $('msSaveBtn');
+  const msReloadBtn = $('msReloadBtn');
+  const msStatus    = $('msStatus');
+  const msNotice    = $('msNotice');
+  let ms = { rules: [], unmatched: [], employees: null, skip: '__skip__' };
+
+  function msEsc(t) {
+    return String(t ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function msOptions(selected) {
+    const opts = [`<option value="">請選擇員工…</option>`];
+    const emps = (ms.employees || []).slice();
+    if (selected && selected !== ms.skip && !emps.some(e => e.code === selected)) {
+      emps.push({ code: selected, name: '', nameLang: '' });   // 規則指到的員工不在近期名單（如已離職）也要能顯示
+    }
+    emps.forEach(e => {
+      const label = [e.code, e.name, e.nameLang].filter(Boolean).join(' ');
+      opts.push(`<option value="${msEsc(e.code)}"${e.code === selected ? ' selected' : ''}>${msEsc(label)}</option>`);
+    });
+    opts.push(`<option value="${msEsc(ms.skip)}"${selected === ms.skip ? ' selected' : ''}>不計入（他店支援／已離職）</option>`);
+    return opts.join('');
+  }
+
+  function msRender() {
+    const pending = ms.unmatched.length;
+    if (pending) setBadge(msBadge, `${pending} 個名字待指定`, 'warn');
+    else setBadge(msBadge, ms.rules.length ? `✓ ${ms.rules.length} 條規則` : '自動對應', 'ok');
+
+    msUnmatchedTitle.hidden = msUnmatchedGroup.hidden = !pending;
+    msUnmatchedGroup.innerHTML = ms.unmatched.map(u => `
+      <div class="row" data-name="${msEsc(u.name)}">
+        <span class="row-label">${msEsc(u.name)}<span class="row-sub">${u.count} 筆・${msEsc(u.lastSeen || '')}</span></span>
+        <div class="row-control"><select>${msOptions('')}</select></div>
+      </div>`).join('');
+
+    msRulesGroup.innerHTML = ms.rules.length
+      ? ms.rules.map(r => `
+      <div class="row" data-name="${msEsc(r.name)}">
+        <span class="row-label">${msEsc(r.name)}</span>
+        <div class="row-control"><select>${msOptions(r.code)}</select></div>
+        <button class="ghost-btn ms-del" type="button" title="刪除這條規則">刪除</button>
+      </div>`).join('')
+      : `<div class="row"><span class="row-sub flush">尚無規則（目前全部靠自動對應）</span></div>`;
+    msNewCode.innerHTML = msOptions('');
+  }
+
+  async function loadMysetup(withEmployees) {
+    const shopId = shopSelect.value;
+    if (!shopId) return;
+    if (withEmployees) msStatus.textContent = '載入本店員工名單中（需連 EPB）…';
+    try {
+      const res = await fetch(`/api/mysetup/aliases?shopId=${encodeURIComponent(shopId)}&employees=${withEmployees ? 1 : 0}`);
+      const data = await res.json();
+      ms.rules = data.rules || [];
+      ms.unmatched = data.unmatched || [];
+      ms.skip = data.skip || ms.skip;
+      if (withEmployees) {
+        ms.employees = data.employees || [];
+        msStatus.textContent = data.employeesError
+          ? '⚠ 無法載入員工名單（請確認 VPN）：下拉只顯示已設定的員工'
+          : '';
+      }
+      msRender();
+    } catch (e) {
+      setBadge(msBadge, '—', '');
+      msStatus.textContent = '載入失敗：' + e.message;
+    }
+  }
+
+  // 收合時只抓規則（不連 EPB），展開才載入員工下拉
+  msDetails.addEventListener('toggle', () => {
+    if (msDetails.open && ms.employees === null) loadMysetup(true);
+  });
+  shopSelect.addEventListener('change', () => {
+    ms.employees = null;
+    loadMysetup(msDetails.open);
+  });
+  msReloadBtn.addEventListener('click', () => loadMysetup(true));
+
+  msRulesGroup.addEventListener('click', e => {
+    const btn = e.target.closest('.ms-del');
+    if (!btn) return;
+    const name = btn.closest('.row').dataset.name;
+    ms.rules = ms.rules.filter(r => r.name !== name);
+    msRender();
+    msStatus.textContent = '已移除，按「儲存對照」後生效';
+  });
+
+  msAddBtn.addEventListener('click', () => {
+    const name = msNewName.value.trim();
+    const code = msNewCode.value;
+    if (!name || !code) { msStatus.textContent = '請輸入名字並選擇員工'; return; }
+    ms.rules = ms.rules.filter(r => r.name !== name).concat([{ name, code }]);
+    msNewName.value = '';
+    msRender();
+    msStatus.textContent = '已加入，按「儲存對照」後生效';
+  });
+
+  msSaveBtn.addEventListener('click', async () => {
+    // 已設定規則（含修改過的下拉）＋未對上清單中有選員工的
+    const rules = [...msRulesGroup.querySelectorAll('.row[data-name]')].map(row => ({
+      name: row.dataset.name, code: row.querySelector('select').value,
+    })).filter(r => r.code);
+    msUnmatchedGroup.querySelectorAll('.row[data-name]').forEach(row => {
+      const code = row.querySelector('select').value;
+      if (code) rules.push({ name: row.dataset.name, code });
+    });
+    msSaveBtn.disabled = true;
+    try {
+      const res = await fetch('/api/mysetup/aliases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shopId: shopSelect.value, rules }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || '儲存失敗');
+      ms.rules = data.rules || [];
+      ms.unmatched = data.unmatched || [];
+      msRender();
+      msStatus.textContent = `已儲存 ${ms.rules.length} 條規則，下次產報自動套用`;
+    } catch (e) {
+      msStatus.textContent = '儲存失敗：' + e.message;
+    } finally {
+      msSaveBtn.disabled = false;
+    }
+  });
+
+  function readFileAsDataURL(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+
   async function pollStatus() {
     if (!currentJobId) return;
     try {
@@ -462,6 +613,12 @@
         downloadLogBox.hidden = true;
         showLogBtn.textContent = '顯示 log';
         renderDownloadLog();
+        const unmatched = data.mysetupUnmatched || 0;
+        msNotice.hidden = !unmatched;
+        msNotice.textContent = unmatched
+          ? `MySetup：${unmatched} 個名字未對上，已列在第 13/14 頁加總列上方。請到「MySetup 名稱對照」指定員工，下次產報自動套用。`
+          : '';
+        if (unmatched) loadMysetup(false);
         show(downloadCard);
       } else if (data.status === 'error') {
         stopPoll();
@@ -508,6 +665,15 @@
     show(progressCard);
 
     const body = { shopId, weekEnd: wkEnd, yoyEnd: yoyEnd || '', employeeCount: empCount };
+    if (mysetupFile.files[0]) {
+      try {
+        body.mysetupFile = await readFileAsDataURL(mysetupFile.files[0]);
+      } catch (e) {
+        errorMsg.textContent = 'Personal Setup Excel 讀取失敗：' + e.message;
+        show(errorCard);
+        return;
+      }
+    }
     if (advPeriods.open) {
       const periods = {};
       ADV_FIELDS.forEach(k => { const v = $(k).value; if (v) periods[k] = v; });
