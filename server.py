@@ -581,7 +581,9 @@ def fill_mysetup_sheets(wb, shop_id, records, employees, dates, log=lambda m: No
             msg += "；不計入：" + "、".join(f"{k}（{v} 筆）" for k, v in skipped.items())
         log(msg)
     mysetup.save_unmatched(shop_id, all_unmatched, dates["mo_end"].isoformat())
-    return len(all_unmatched)
+    employees_out = [{"code": code, "name": emp_names.get(code, ("", ""))[0], "nameLang": emp_names.get(code, ("", ""))[1]}
+                     for code, _ in employees]
+    return all_unmatched, employees_out
 
 
 def load_sacare_cached():
@@ -1613,7 +1615,12 @@ def build_report_workbook(payload, log=lambda m: None):
 
     if mysetup_records is not None:
         log("填入 13-14 MySetup 提交數量…")
-        source_meta["mysetupUnmatched"] = fill_mysetup_sheets(wb, shop_id, mysetup_records, employees, dates, log=log)
+        unmatched, ms_employees = fill_mysetup_sheets(wb, shop_id, mysetup_records, employees, dates, log=log)
+        source_meta["mysetupUnmatched"] = len(unmatched)
+        source_meta["mysetup"] = {
+            "unmatched": [{"name": n, "count": c} for n, c in sorted(unmatched.items(), key=lambda x: -x[1])],
+            "employees": ms_employees,   # 週報小幫手設定對照時的下拉選項
+        }
 
     source_meta["employeeCount"] = len(employees)
     source_meta["employees"] = [{"code": code, "name": name} for code, name in employees]

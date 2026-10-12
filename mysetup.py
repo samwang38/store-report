@@ -14,6 +14,7 @@ import re
 import shutil
 import threading
 import warnings
+from contextlib import contextmanager
 from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
@@ -23,6 +24,9 @@ import openpyxl
 CONFIG_PATH = Path(__file__).resolve().parent / "local_config.json"
 SKIP = "__skip__"
 _CFG_LOCK = threading.Lock()
+# 週報小幫手的工作：對照規則由 Worker 隨工作帶來（店長在 LINE 設定），不讀寫本機 local_config。
+# 產報時一次只跑一份，用模組層級變數即可（同 shoppertrak_traffic.credentials_override）。
+_ALIAS_OVERRIDE = None
 
 COL_UID = "Unique ID"
 COL_NAME = "Staff Name"
@@ -175,7 +179,22 @@ def get_aliases(shop_id):
 
 
 def alias_codes(shop_id):
+    if _ALIAS_OVERRIDE is not None:
+        return dict(_ALIAS_OVERRIDE)
     return {k: v.get("code") for k, v in get_aliases(shop_id).items() if v.get("code")}
+
+
+@contextmanager
+def aliases_override(rules):
+    """rules: [{"name", "code"}]（週報小幫手的門市規則）；期間內不讀本機規則、也不寫未對上清單。"""
+    global _ALIAS_OVERRIDE
+    prev = _ALIAS_OVERRIDE
+    _ALIAS_OVERRIDE = {normalize(r.get("name")): str(r.get("code") or "").strip()
+                       for r in (rules or []) if normalize(r.get("name")) and r.get("code")}
+    try:
+        yield
+    finally:
+        _ALIAS_OVERRIDE = prev
 
 
 def save_aliases(shop_id, rules):
@@ -203,6 +222,8 @@ def get_unmatched(shop_id):
 
 def save_unmatched(shop_id, unmatched, last_seen):
     """unmatched: {顯示名: 筆數}；每次產報覆寫，沒有未對上就清空。"""
+    if _ALIAS_OVERRIDE is not None:
+        return
     items = [{"name": n, "count": c, "lastSeen": last_seen} for n, c in sorted(unmatched.items(), key=lambda x: -x[1])]
     with _CFG_LOCK:
         cfg = _load()

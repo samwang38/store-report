@@ -169,7 +169,11 @@ def epb_reachable(timeout=3):
         return False
 
 
-def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, to, manager_name="", traffic=None):
+def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, to, manager_name="", traffic=None,
+                   mysetup_job=None):
+    """mysetup_job：Worker 帶來的 {filename, data(base64), rules}（店長在 LINE 上傳的 Personal Setup Excel 與名稱對照）。
+    回傳 MySetup 結果 {unmatched, employees} 供回報 Worker；沒帶檔案時回傳 None。"""
+    import mysetup
     import server
     import shoppertrak_traffic
     wk_end = date.fromisoformat(week_end)
@@ -182,14 +186,27 @@ def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, t
     t = traffic or {}
     if t.get("username"):
         log("  使用門市自己的人流帳號")
-    with shoppertrak_traffic.credentials_override(t.get("username"), t.get("password")):
-        filename, body, _meta = server.build_report_excel(payload, log=lambda m: log(f"  {m}"))
+    ms = mysetup_job or {}
+    if ms.get("data"):
+        payload["mysetupFile"] = ms["data"]
+        log(f"  使用門市上傳的 Personal Setup Excel：{ms.get('filename', '')}（對照規則 {len(ms.get('rules') or [])} 條）")
+    with shoppertrak_traffic.credentials_override(t.get("username"), t.get("password")), \
+            mysetup.aliases_override(ms.get("rules") or []):
+        filename, body, meta = server.build_report_excel(payload, log=lambda m: log(f"  {m}"))
+    ms_result = meta["sourceMeta"].get("mysetup") if ms.get("data") else None
+    notice = ""
+    if ms_result and ms_result["unmatched"]:
+        names = "、".join(f"{u['name']}（{u['count']} 筆）" for u in ms_result["unmatched"])
+        notice = (f"\nMySetup 有名字對不上員工：{names}。這些筆數暫時列在第 13/14 頁加總列上方，"
+                  "請到 LINE「我的帳戶」的 MySetup 名稱對照指定員工，下次產出會自動套用。\n")
     span = f"{wk_start:%m/%d}–{wk_end:%m/%d}"
     send_mail(cfg, to, f"【週報】{shop_name} {span}",
               f"{manager_name or '店長'} 你好：\n\n附件是 {shop_name} {wk_start:%Y/%m/%d}（日）到 {wk_end:%Y/%m/%d}（六）的週報。\n"
+              f"{notice}"
               "數字有疑問，直接在 LINE 告訴 Sam，確認後修正重寄不扣次。\n\n週報小幫手",
               attachment=(filename, body))
     log(f"  已寄出 {filename}（{len(body):,} bytes，{time.time() - t0:.0f} 秒）")
+    return ms_result
 
 
 # ─── 主流程 ───────────────────────────────────────────────
@@ -231,9 +248,13 @@ def process_jobs(cfg):
             return
         log(f"領到工作 #{job['id']}：{job['shop_id']} {job['shop_name']} 週結束 {job['week_end']}")
         try:
-            build_and_send(cfg, job["shop_id"], job["shop_name"], job["week_end"], job.get("yoy_end"),
-                           job.get("employee_count"), job["to_email"], job.get("manager_name", ""), job.get("traffic"))
-            worker(cfg, "POST", "/api/mac/jobs/result", {"id": job["id"], "ok": True, "version": app_version()})
+            ms_result = build_and_send(cfg, job["shop_id"], job["shop_name"], job["week_end"], job.get("yoy_end"),
+                                       job.get("employee_count"), job["to_email"], job.get("manager_name", ""),
+                                       job.get("traffic"), job.get("mysetup"))
+            result = {"id": job["id"], "ok": True, "version": app_version()}
+            if ms_result is not None:
+                result["mysetup"] = ms_result
+            worker(cfg, "POST", "/api/mac/jobs/result", result)
         except Exception as e:
             tb = traceback.format_exc()
             log(f"工作 #{job['id']} 失敗：{e}")
