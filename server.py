@@ -13,6 +13,7 @@ import csv
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -174,6 +175,7 @@ STANDARD_COLUMNS = [
     "淨銷售金額(未稅)",
     "促銷活動名稱",
     "折後金額",
+    "活動細項",
 ]
 
 
@@ -409,6 +411,7 @@ def standardize_remote_records(records):
                 "促銷活動名稱": text(rec.get("MC_NAME")),
                 # 尾款列 NET=0，實際出貨金額在 LINE_TOTAL_AFTDISC（第 6 頁「訂單出貨金額(b)」）
                 "折後金額": number(rec.get("LINE_TOTAL_AFTDISC")),
+                "活動細項": text(rec.get("SUB_MC_REMARK")),   # 第 21 頁：ERP 子活動說明
             }
         )
     if not rows:
@@ -424,9 +427,9 @@ def standardize_remote_records(records):
     return df
 
 
-def remote_sales_df(shop_id, ranges):
+def remote_sales_df(shop_id, ranges, extra_where=""):
     """ranges: [(start_date, end_date), ...]。多組區間以 OR 合併成單一 SQL，
-    只啟動一次 JVM / 一次 SOAP 來回，由呼叫端再依日期切分。"""
+    只啟動一次 JVM / 一次 SOAP 來回，由呼叫端再依日期切分。extra_where：額外的 SQL 條件（例：限定類別 6）。"""
     ranges = [(s, e) for s, e in ranges if e >= s]
     if not ranges:
         return empty_standard_df()
@@ -459,13 +462,14 @@ select
   l.cat6_id,
   l.disc_num,
   l.line_no,
-  m.mc_name
+  m.mc_name,
+  l.sub_mc_remark
 from poslinev_bi l
 left join ep_user e on e.user_id = l.emp_id1
 left join pos_mc_code m on m.mc_id = l.mc_id
 where l.org_id = {quote_sql(ORG_ID)}
   and l.shop_id = {quote_sql(shop_id)}
-  and ({date_conds})
+  and ({date_conds}){f" and ({extra_where})" if extra_where else ""}
 order by l.doc_date, l.doc_id, l.line_no
 """
     headers, rows = run_remote(sql, max_rows=500000)
@@ -492,6 +496,42 @@ def load_c6_names():
                 continue
             _C6_NAME_CACHE[code] = text(row[1]).split("(")[0].strip()
     return dict(_C6_NAME_CACHE)
+
+
+_C4_NAME_CACHE = {}
+
+
+def load_c4_names():
+    """ERP 類別 4 名稱（STKCAT4），供第 23 頁細項平均單價欄名。查詢失敗由呼叫端處理（欄名改顯示代碼）。"""
+    if not _C4_NAME_CACHE:
+        headers, rows = run_remote("select cat4_id, name from stkcat4 where org_id is null", timeout=60)
+        for row in rows:
+            try:
+                _C4_NAME_CACHE[float(row[0])] = _strip_korean(text(row[1]))
+            except (TypeError, ValueError, IndexError):
+                continue
+    return dict(_C4_NAME_CACHE)
+
+
+def _strip_korean(name):
+    """類別名稱後面接著韓文翻譯（例「CPU/iOS通用週邊配件CPU/iOS 공용주변기기」）：
+    從第一個韓文字切掉，再去掉翻譯前段重複的英文字頭。"""
+    hangul = re.search(r"[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]", name)
+    if not hangul:
+        return name.split("(")[0].strip()
+    head = name[:hangul.start()].rstrip()
+    lead = re.match(r"[A-Za-z0-9/ ]+", head)
+    if lead:
+        word = lead.group(0).strip()
+        if word and head.endswith(word) and len(head) > len(word):
+            head = head[: -len(word)].rstrip()
+    return head.strip() or name
+
+
+def load_launch_df(shop_id, wk_end):
+    """第 22 頁新機上市追蹤：只抓追蹤機種（新機與對照機種）近 3 年的銷售列。"""
+    return remote_sales_df(shop_id, [(wk_end - timedelta(days=3 * 366), wk_end)],
+                           extra_where="l.cat6_id in (" + ",".join(str(c) for c in engine.LAUNCH_C6) + ")")
 
 
 def epb_emp_names(codes):
@@ -660,8 +700,10 @@ def load_epb_data(shop_id, dates, quarter_start):
     # 納入 Sheet 16/17 年對年區間（截止日可由前端自訂，可能晚於週結束日）
     yoy_cur_s, yoy_cur_e, yoy_prv_s, yoy_prv_e = engine._yoy_periods(dates)
     # df_cur 涵蓋上週/本週/本月/上月，df_prev 涵蓋去年同期；納入自訂覆寫區間邊界以確保資料齊全
+    # 第 26 頁近 8 週走勢：往前多抓 7 週
     cur_start = min(dates["ytd_cur_start"], dates["prev_wk_start"], dates["wk_start"],
-                    dates["mo_start"], dates["lm_start"], quarter_start, yoy_cur_s)
+                    dates["mo_start"], dates["lm_start"], quarter_start, yoy_cur_s,
+                    dates["wk_start"] - timedelta(days=49))
     cur_end = max(dates["mo_end"], dates["wk_end"], dates["prev_wk_end"], dates["lm_end"], yoy_cur_e)
     prv_start = min(dates["ytd_prv_start"], dates["ly_start"], yoy_prv_s)
     prv_end = max(dates["ly_end"], yoy_prv_e)
@@ -795,7 +837,7 @@ def load_bundle_stats(shop_id, wk_start, wk_end, mo_start, mo_end, fiscal_start,
     「本月」區間，與 Sheet 12/14/15/16 等其他月報表口徑一致（含進階自訂區間覆寫）。
     """
     periods = {("w", 0): (wk_start, wk_end)}
-    for i in (1, 2, 3):
+    for i in range(1, 8):   # 前 3 週給第 10 頁；前 7 週給第 26 頁近 8 週走勢
         s = wk_start - timedelta(days=7 * i)
         periods[("w", i)] = (s, s + timedelta(days=6))
     periods[("m", 0)] = (mo_start, mo_end)
@@ -858,6 +900,7 @@ def load_bundle_stats(shop_id, wk_start, wk_end, mo_start, mo_end, fiscal_start,
             "current": results[("w", 0)],
             "history": [(label_week(i), results[("w", i)]) for i in (1, 2, 3)],
         },
+        "weeks8": [(periods[("w", i)][0], results[("w", i)]) for i in range(7, -1, -1)],
         "month": {
             "current": results[("m", 0)],
             "history": [(f"{periods[('m', i)][0].month}月", results[("m", i)])
@@ -1645,6 +1688,15 @@ def build_report_workbook(payload, log=lambda m: None):
     engine.fill_sheet_detail_ops(wb, df_cur, df_prev, sacare_prices, dates)
     engine.fill_sheet_hot_series(wb, df_cur, sacare_prices, dates)
 
+    log("填入 21-22 主機活動／新機上市追蹤…")
+    engine.fill_sheet_promo(wb, df_cur, sacare_prices, dates)
+    try:
+        df_launch = load_launch_df(shop_id, wk_end)
+    except Exception as exc:  # 查不到就留空，報表照常
+        df_launch = None
+        log(f"  ⚠ 新機上市追蹤資料查詢失敗，第 22 頁留空：{exc}")
+    engine.fill_sheet_launch(wb, df_launch, dates)
+
     log("查詢第 12 頁 ERP BI（總業績/3PP/原廠/Apple毛利/3PP毛利）…")
     try:
         sheet8_bi = epb_sheet8_bi(shop_id, dates["mo_start"], dates["mo_end"])
@@ -1672,6 +1724,17 @@ def build_report_workbook(payload, log=lambda m: None):
     else:
         log("未填入搭售統計，清空 10-11 模板預設值…")
         clear_bundle_sheets(wb)
+
+    log("填入 23-26 員工分析…")
+    try:
+        engine.C4_NAMES = load_c4_names()
+    except Exception as exc:  # 名稱查不到不影響數字
+        log(f"  ⚠ 類別 4 名稱查詢失敗，第 23 頁欄名改顯示代碼：{exc}")
+    engine.fill_sheet_emp_aov(wb, df_cur, sacare_prices, dates)
+    engine.fill_sheet_emp_warranty(wb, df_cur, sacare_prices, dates)
+    engine.fill_sheet_emp_mix(wb, df_cur, sacare_prices, dates)
+    engine.fill_sheet_emp_trend(wb, df_cur, sacare_prices, dates,
+                                bundle_weeks=bundle["weeks8"] if bundle else None, fiscal_start=fiscal_start)
 
     if mysetup_records is not None:
         log("填入 13-14 MySetup 提交數量…")
@@ -1725,12 +1788,11 @@ def _xlsx_bytes(wb):
 
 
 def build_report_excel(payload, log=lambda m: None):
-    """回傳 ([(檔名, bytes), ...], meta)：週報（1–17 頁）與分析（18–20 頁）各一個檔案。"""
+    """回傳 ([(檔名, bytes), ...], meta)：週報（1–17 頁）與分析（18–26 頁）各一個檔案。"""
     wb, meta = build_report_workbook(payload, log=log)
     log("儲存 Excel…")
-    analysis = [n for n in (engine.DETAIL_SHEET_PRODUCTS, engine.DETAIL_SHEET_OPS, engine.HOT_SERIES_SHEET)
-                if n in wb.sheetnames]
-    wb_a = openpyxl.load_workbook(BytesIO(_xlsx_bytes(wb)))   # 整本複製一份，分析檔只留 18–20 頁
+    analysis = [n for n in engine.ANALYSIS_SHEETS if n in wb.sheetnames]
+    wb_a = openpyxl.load_workbook(BytesIO(_xlsx_bytes(wb)))   # 整本複製一份，分析檔只留 18–26 頁
     for name in wb_a.sheetnames:
         if name not in analysis:
             del wb_a[name]

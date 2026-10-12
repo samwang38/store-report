@@ -2016,6 +2016,430 @@ def fill_sheet_hot_series(wb, df_cur, sacare_prices, dates: dict):
     _hot_series_block(ws, 7, mo_title, tpp(dates['mo_start'], dates['mo_end']), c4_labels, st)
 
 
+# ─── Sheet 21–26：主機活動／新機上市追蹤／員工分析（分析檔）────────────────────
+PROMO_SHEET       = '21.主機活動'
+LAUNCH_SHEET      = '22.新機上市追蹤'
+EMP_AOV_SHEET     = '23.個人客單價'
+EMP_WARRANTY_SHEET = '24.個人保固附加率'
+EMP_MIX_SHEET     = '25.個人業績組成'
+EMP_TREND_SHEET   = '26.個人近8週走勢'
+ANALYSIS_SHEETS = [DETAIL_SHEET_PRODUCTS, DETAIL_SHEET_OPS, HOT_SERIES_SHEET, PROMO_SHEET, LAUNCH_SHEET,
+                   EMP_AOV_SHEET, EMP_WARRANTY_SHEET, EMP_MIX_SHEET, EMP_TREND_SHEET]
+
+# 分析用主機品類（台數口徑同 _device_stats：C3 或認證機品牌，退貨扣回）
+ANALYSIS_LINES = [
+    ('iPhone',  lambda d: d['類別4代碼'].isin(C4_IPHONE), 3001.0),
+    ('iPad',    lambda d: d['類別4代碼'].isin(C4_IPAD), 3001.0),
+    ('Mac',     lambda d: d['類別6代碼'].isin(C6_CPU), 3001.0),
+    ('Watch',   lambda d: d['類別4代碼'].isin(C4_WATCH), 3001.0),
+    ('AirPods', _is_airpods, 3002.0),
+]
+
+# 新機上市追蹤：(新機, C6, C3, 對照機種, C6)。上市日＝第一筆銷售日；新機上市時在這裡加一組
+LAUNCH_PAIRS = [
+    ('iPhone 18 Pro',     {6345.0}, 3001.0, 'iPhone 17 Pro',     {6325.0}),
+    ('iPhone 18 Pro Max', {6346.0}, 3001.0, 'iPhone 17 Pro Max', {6326.0}),
+    ('Watch S12',         {6349.0}, 3001.0, 'Watch S11',         {6327.0}),
+    ('Watch Ultra 4',     {6350.0}, 3001.0, 'Watch Ultra 3',     {6328.0}),
+    ('AirPods 5',         {6348.0}, 3002.0, 'AirPods 4',         {6312.0}),
+]
+LAUNCH_WEEKS = 12
+LAUNCH_C6 = sorted({int(c) for p in LAUNCH_PAIRS for c in (p[1] | p[4])})
+
+C4_NAMES: dict = {}   # 類別 4 名稱（server 從 ERP 帶入；查不到時顯示代碼）
+WARRANTY_DEVICES = [('Mac', 'cpu_total', 'acpp_mac', 'sa_cpu'), ('iPad', 'ipad', 'acpp_ipad', 'sa_ipad'),
+                    ('iPhone', 'iphone', 'acpp_iphone', 'sa_iphone'), ('Watch', 'watch', 'acpp_watch', 'sa_watch'),
+                    ('AirPods', 'airpods', 'acpp_airpods', 'sa_airpods')]
+
+
+def _line_mask(d, sel, c3):
+    return ((d['類別3代碼'] == c3) | d['品牌代碼'].isin(CERT_BRANDS)) & sel(d)
+
+
+def _c4_name(code) -> str:
+    return C4_NAMES.get(float(code)) or f'類別4 {int(code)}'
+
+
+def _gift_mask(d):
+    """贈品列（同第 20 頁）：折扣 ≥ 80 或金額 0 的非退貨列。"""
+    return (d['折扣'].fillna(0) >= 80) | ((d['NET'].abs() == 0) & (d['交易類型'] != '銷退'))
+
+
+def _avg_price(d):
+    """平均單價＝(銷售＋銷退) 金額 ÷ 淨件數，排除贈品；訂金／尾款不計。"""
+    x = d[d['交易類型'].isin(['銷售', '銷退']) & ~_gift_mask(d)]
+    qty = x['數量'].sum()
+    return int(round(x['NET'].sum() / qty)) if qty > 0 else None
+
+
+def _emp_label(code, name):
+    name = str(name or '').strip()
+    return name if name.startswith(code) else f'{code} {name}'.strip()
+
+
+def _emp_frames(d):
+    """[(顯示名稱, 該員工的列)…, ('門市合計', 全部)]，員工順序同個人頁。"""
+    rows = [(_emp_label(code, name), d[d['員工代碼'] == code]) for code, name in EMPLOYEES]
+    return rows + [('門市合計', d)]
+
+
+def _head_cells(ws, row, col0, labels, st, fill=None):
+    from openpyxl.cell.cell import MergedCell
+    for j, lab in enumerate(labels):
+        cell = ws.cell(row=row, column=col0 + j)
+        if not isinstance(cell, MergedCell):   # 合併儲存格只有左上角能寫值
+            cell.value = lab
+        cell.font, cell.alignment, cell.border = st['head'], st['center'], st['border']
+        cell.fill = fill or st['head_fill']
+
+
+def _title_row(ws, row, text, ncols, st):
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=ncols)
+    for c in range(1, ncols + 1):
+        cell = ws.cell(row=row, column=c)
+        cell.fill, cell.border = st['sec_fill'], st['border']
+    ws.cell(row=row, column=1).value = text
+    ws.cell(row=row, column=1).font = st['bold']
+    ws.cell(row=row, column=1).alignment = st['left']
+    return row + 1
+
+
+def _value_row(ws, row, label, vals, fmts, st, bold=False, colors=None):
+    """寫一列：A 欄標籤，B 起數值；fmts 對應每個值的 number_format；colors 對應字色（None＝預設）。"""
+    from openpyxl.styles import Font
+    c = ws.cell(row=row, column=1)
+    c.value, c.font, c.alignment, c.border = label, st['bold'] if bold else st['font'], st['left'], st['border']
+    for j, v in enumerate(vals):
+        cell = ws.cell(row=row, column=2 + j)
+        cell.value, cell.number_format, cell.border = v, fmts[j], st['border']
+        color = colors[j] if colors else None
+        cell.font = Font(name='Arial', size=12, bold=bold, color=color) if color else (st['bold'] if bold else st['font'])
+    return row + 1
+
+
+def _vs_color(v, avg):
+    """高於門市平均綠色、低於紅色。"""
+    if v is None or avg is None:
+        return None
+    return '00B050' if v > avg else ('C00000' if v < avg else None)
+
+
+def _period_label(name, s, e):
+    return f'{name} {s:%m/%d}~{e:%m/%d}'
+
+
+# ── 21. 主機活動 ──
+def fill_sheet_promo(wb, df_cur, sacare_prices, dates: dict):
+    print(f'  Sheet 21: {PROMO_SHEET}', flush=True)
+    ws = _reset_detail_sheet(wb, PROMO_SHEET, freeze='B3')
+    ws.column_dimensions['A'].width = 64
+    st = _detail_styles()
+    sa_codes = set(sacare_prices.keys())
+    wk = _non_sa(period(df_cur, dates['wk_start'], dates['wk_end']), sa_codes)
+    mo = _non_sa(period(df_cur, dates['mo_start'], dates['mo_end']), sa_codes)
+
+    def label(d):
+        sub = d['活動細項'] if '活動細項' in d.columns else pd.Series('', index=d.index)
+        main = d['促銷活動名稱'] if '促銷活動名稱' in d.columns else pd.Series('', index=d.index)
+        sub = sub.fillna('').astype(str).str.strip()
+        main = main.fillna('').astype(str).str.strip()
+        return sub.where(sub != '', main).where(lambda s: s != '', '無活動')
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=2, end_column=1)
+    _head_cells(ws, 1, 1, ['活動細項'], st)
+    for gi, (name, s, e) in enumerate((('本週', dates['wk_start'], dates['wk_end']),
+                                       ('本月', dates['mo_start'], dates['mo_end']))):
+        c0 = 2 + gi * 2
+        ws.merge_cells(start_row=1, start_column=c0, end_row=1, end_column=c0 + 1)
+        _head_cells(ws, 1, c0, [_period_label(name, s, e), ''], st)
+        _head_cells(ws, 2, c0, ['台數', '占比'], st, fill=st['group_fills'][gi])
+        for j in range(2):
+            ws.cell(row=2, column=c0 + j).font = st['bold']
+    row = 3
+    for name, sel, c3 in ANALYSIS_LINES:
+        mw, mm = _line_mask(wk, sel, c3), _line_mask(mo, sel, c3)
+        tw, tm = _net_units(wk, mw), _net_units(mo, mm)
+        lw, lm = label(wk), label(mo)
+        acts = sorted(set(lw[mw]) | set(lm[mm]))
+        stats = [(a, _net_units(wk, mw & (lw == a)), _net_units(mo, mm & (lm == a))) for a in acts]
+        stats = [s for s in stats if s[1] or s[2]]
+        stats.sort(key=lambda s: (s[0] == '無活動', -s[2], -s[1], s[0]))
+        row = _value_row(ws, row, f'{name}（本週 {tw} 台／本月 {tm} 台）', [None] * 4,
+                         ['#,##0'] * 4, st, bold=True)
+        for c in range(1, 6):
+            ws.cell(row=row - 1, column=c).fill = st['sec_fill']
+        for a, uw, um in stats:
+            row = _value_row(ws, row, a, [uw, safe_rate(uw, tw) if tw else None, um, safe_rate(um, tm) if tm else None],
+                             ['#,##0', '0.0%', '#,##0', '0.0%'], st)
+    ws.cell(row=row + 1, column=1).value = '活動細項取 ERP 子活動說明；台數含尾款、扣除退貨，同第 1、19 頁口徑。'
+    ws.cell(row=row + 1, column=1).font = st['font']
+
+
+# ── 22. 新機上市追蹤 ──
+def fill_sheet_launch(wb, df_track, dates: dict):
+    print(f'  Sheet 22: {LAUNCH_SHEET}', flush=True)
+    ws = _reset_detail_sheet(wb, LAUNCH_SHEET, freeze='A1')
+    for col, width in zip('ABCDEFGH', (10, 16, 11, 11, 16, 11, 11, 11)):
+        ws.column_dimensions[col].width = width
+    st = _detail_styles()
+    report_end = pd.Timestamp(dates['wk_end'])
+    d = df_track if df_track is not None else pd.DataFrame(columns=['單據日期'])
+
+    def first_sale(mask):
+        x = d.loc[mask & d['交易類型'].isin(SALE_TYPES) & (d['數量'] > 0), '單據日期']
+        return x.min().normalize() if len(x) else None
+
+    def weekly(mask, start, upto):
+        out = []
+        for k in range(LAUNCH_WEEKS):
+            s = start + pd.Timedelta(days=7 * k)
+            e = s + pd.Timedelta(days=6)
+            if e > upto:
+                out.append((s, e, None))
+                continue
+            dm = mask & (d['單據日期'] >= s) & (d['單據日期'] < e + pd.Timedelta(days=1))
+            out.append((s, e, _net_units(d, dm)))
+        return out
+
+    row = 1
+    for new_name, new_c6, c3, old_name, old_c6 in LAUNCH_PAIRS:
+        base = ((d['類別3代碼'] == c3) | d['品牌代碼'].isin(CERT_BRANDS)) if len(d) else None
+        new_mask = base & d['類別6代碼'].isin(new_c6) if len(d) else None
+        old_mask = base & d['類別6代碼'].isin(old_c6) if len(d) else None
+        n0 = first_sale(new_mask) if len(d) else None
+        o0 = first_sale(old_mask) if len(d) else None
+        title = (f"{new_name}（首賣 {n0:%Y/%m/%d}）" if n0 is not None else f'{new_name}（尚未開賣）') + \
+                (f"  vs  {old_name}（首賣 {o0:%Y/%m/%d}）" if o0 is not None else f'  vs  {old_name}（查無銷售）')
+        row = _title_row(ws, row, title, 8, st)
+        _head_cells(ws, row, 1, ['上市週', '今年期間', '今年台數', '今年累計', '對照期間', '對照台數', '對照累計', '累計比'], st)
+        row += 1
+        if n0 is None:
+            row += 1
+            continue
+        new_w = weekly(new_mask, n0, report_end)
+        old_w = weekly(old_mask, o0, report_end) if o0 is not None else [(None, None, None)] * LAUNCH_WEEKS
+        cum_n = cum_o = 0
+        for k in range(LAUNCH_WEEKS):
+            s, e, u = new_w[k]
+            os_, oe, ou = old_w[k]
+            if u is not None:
+                cum_n += u
+            if ou is not None:
+                cum_o += ou
+            ratio = safe_rate(cum_n, cum_o) if (u is not None and ou is not None and cum_o) else None
+            vals = [f'{s:%m/%d}~{e:%m/%d}', u, cum_n if u is not None else None,
+                    f'{os_:%Y/%m/%d}' if os_ is not None else None, ou, cum_o if ou is not None else None, ratio]
+            row = _value_row(ws, row, f'第 {k + 1} 週', vals,
+                             ['@', '#,##0', '#,##0', '@', '#,##0', '#,##0', '0%'], st)
+        row += 1
+    ws.cell(row=row, column=1).value = ('上市週從首賣日起每 7 天一週；只列已過完的週。對照期間為對照機種首賣後同一週的起始日。'
+                                        '累計比＝今年累計 ÷ 對照累計。')
+    ws.cell(row=row, column=1).font = st['font']
+
+
+# ── 23. 個人客單價 ──
+def fill_sheet_emp_aov(wb, df_cur, sacare_prices, dates: dict):
+    print(f'  Sheet 23: {EMP_AOV_SHEET}', flush=True)
+    ws = _reset_detail_sheet(wb, EMP_AOV_SHEET, freeze='B3')
+    ws.column_dimensions['A'].width = 22
+    st = _detail_styles()
+    sa_codes = set(sacare_prices.keys())
+    groups = [('原廠（主機＋原廠配件）', [3001.0, 3002.0]), ('3PP', [3003.0])]
+
+    def stats(f_all, f_emp, c3s):
+        deals = _doc_set(f_all, f_all['交易類型'] == '銷售') - _doc_set(f_all, f_all['交易類型'] == '銷退')
+        nf = _non_sa(f_emp, sa_codes)
+        m = nf['單據代碼'].astype(str).isin(deals) & (nf['交易類型'] == '銷售') & nf['類別3代碼'].isin(c3s)
+        docs = _doc_set(nf, m)
+        rev = int(nf.loc[m, 'NET'].sum())
+        return len(docs), rev, (int(round(rev / len(docs))) if docs else None)
+
+    periods = [('本週', dates['wk_start'], dates['wk_end']), ('本月', dates['mo_start'], dates['mo_end'])]
+    # 表頭：員工 | 本週（原廠 筆數/業績/客單、3PP 筆數/業績/客單）| 本月（同）
+    ws.merge_cells(start_row=1, start_column=1, end_row=2, end_column=1)
+    _head_cells(ws, 1, 1, ['員工'], st)
+    for pi, (pname, s, e) in enumerate(periods):
+        for gi, (gname, _) in enumerate(groups):
+            c0 = 2 + pi * 6 + gi * 3
+            ws.merge_cells(start_row=1, start_column=c0, end_row=1, end_column=c0 + 2)
+            _head_cells(ws, 1, c0, [f'{_period_label(pname, s, e)}｜{gname}', '', ''], st)
+            _head_cells(ws, 2, c0, ['筆數', '業績', '客單價'], st, fill=st['group_fills'][pi])
+            for j in range(3):
+                ws.cell(row=2, column=c0 + j).font = st['bold']
+    for c in range(2, 14):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 12
+    ws.row_dimensions[1].height = 36
+    frames = [period(df_cur, s, e) for _, s, e in periods]
+    store = [stats(f, f, c3s) for f in frames for _, c3s in groups]
+    row = 3
+    people = [(_emp_label(code, name), code) for code, name in EMPLOYEES] + [('門市合計', None)]
+    for label, code in people:
+        vals, colors = [], []
+        for pi, f in enumerate(frames):
+            f_emp = f if code is None else f[f['員工代碼'] == code]
+            for gi, (_, c3s) in enumerate(groups):
+                n, rev, aov = stats(f, f_emp, c3s)
+                vals += [n, rev, aov]
+                colors += [None, None, None if label == '門市合計' else _vs_color(aov, store[pi * 2 + gi][2])]
+        row = _value_row(ws, row, label, vals, ['#,##0'] * 12, st, bold=label == '門市合計', colors=colors)
+
+    # 類別 4 細項平均單價（本月）：原廠、3PP 各取門市本月營業額前幾名的類別 4
+    mo = _non_sa(frames[1], sa_codes)
+    for gname, c3s, top in (('原廠', [3001.0, 3002.0], 8), ('3PP', [3003.0], 12)):
+        g = mo[mo['類別3代碼'].isin(c3s) & mo['交易類型'].isin(['銷售', '銷退'])]
+        rev = g.groupby('類別4代碼')['NET'].sum().sort_values(ascending=False)
+        c4s = [c for c, v in rev.items() if v > 0][:top]
+        row += 1
+        row = _title_row(ws, row, f'本月 類別 4 細項平均單價｜{gname}（金額÷件數，不含贈品／訂金／尾款；綠＝高於門市、紅＝低於門市）',
+                         max(len(c4s) + 1, 13), st)
+        _head_cells(ws, row, 1, ['員工'] + [_c4_name(c) for c in c4s], st)
+        ws.row_dimensions[row].height = 36
+        row += 1
+        store_avg = [_avg_price(g[g['類別4代碼'] == c]) for c in c4s]
+        for label, f_emp in _emp_frames(g):
+            vals = [_avg_price(f_emp[f_emp['類別4代碼'] == c]) for c in c4s]
+            colors = None if label == '門市合計' else [_vs_color(v, a) for v, a in zip(vals, store_avg)]
+            row = _value_row(ws, row, label, vals, ['#,##0'] * len(vals), st, bold=label == '門市合計', colors=colors)
+        qty = [int(g.loc[(g['類別4代碼'] == c) & ~_gift_mask(g), '數量'].sum()) for c in c4s]
+        row = _value_row(ws, row, '門市件數', qty, ['#,##0'] * len(qty), st)
+    ws.cell(row=row + 1, column=1).value = ('筆數＝成交單（有銷售列且非整單退貨，同第 19 頁）中含該類商品的單數；業績＝這些單裡該類商品的金額；'
+                                            '客單價＝業績÷筆數。綠＝高於門市、紅＝低於門市。')
+    ws.cell(row=row + 1, column=1).font = st['font']
+
+
+# ── 24. 個人保固附加率 ──
+def fill_sheet_emp_warranty(wb, df_cur, sacare_prices, dates: dict):
+    print(f'  Sheet 24: {EMP_WARRANTY_SHEET}', flush=True)
+    ws = _reset_detail_sheet(wb, EMP_WARRANTY_SHEET, freeze='B1')
+    ws.column_dimensions['A'].width = 22
+    for c in range(2, 2 + 4 * len(WARRANTY_DEVICES)):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 9
+    st = _detail_styles()
+    row = 1
+    for pname, s, e in (('本週', dates['wk_start'], dates['wk_end']), ('本月', dates['mo_start'], dates['mo_end'])):
+        f = period(df_cur, s, e)
+        row = _title_row(ws, row, f'{_period_label(pname, s, e)}（附加率＝(AppleCare＋SA Care) 套數 ÷ 主機台數；綠＝高於門市、紅＝低於門市）',
+                         1 + 4 * len(WARRANTY_DEVICES), st)
+        _head_cells(ws, row, 1, ['員工'], st)
+        for i, (dev, *_rest) in enumerate(WARRANTY_DEVICES):
+            ws.merge_cells(start_row=row, start_column=2 + i * 4, end_row=row, end_column=5 + i * 4)
+            _head_cells(ws, row, 2 + i * 4, [dev, '', '', ''], st)
+        row += 1
+        _head_cells(ws, row, 1, [''], st)
+        for i in range(len(WARRANTY_DEVICES)):
+            _head_cells(ws, row, 2 + i * 4, ['台數', 'AC', 'SA', '附加率'], st, fill=st['group_fills'][i % 3])
+            for j in range(4):
+                ws.cell(row=row, column=2 + i * 4 + j).font = st['bold']
+        row += 1
+        store = calc_metrics(f, sacare_prices)
+        store_rate = [safe_rate(store[ac] + store[sa], store[u]) if store[u] else None
+                      for _, u, ac, sa in WARRANTY_DEVICES]
+        for label, f_emp in _emp_frames(f):
+            m = store if label == '門市合計' else calc_metrics(f_emp, sacare_prices)
+            vals, fmts, colors = [], [], []
+            for i, (_, u, ac, sa) in enumerate(WARRANTY_DEVICES):
+                rate = safe_rate(m[ac] + m[sa], m[u]) if m[u] else None
+                vals += [m[u], m[ac], m[sa], rate]
+                fmts += ['#,##0', '#,##0', '#,##0', '0%']
+                colors += [None, None, None, None if label == '門市合計' else _vs_color(rate, store_rate[i])]
+            row = _value_row(ws, row, label, vals, fmts, st, bold=label == '門市合計', colors=colors)
+        row += 1
+    ws.cell(row=row, column=1).value = '台數、AppleCare（ACPP）與 SA Care 套數同第 19 頁「保固（AC+SA）」口徑，依結帳員工歸屬，退貨扣回。'
+    ws.cell(row=row, column=1).font = st['font']
+
+
+# ── 25. 個人業績組成 ──
+def fill_sheet_emp_mix(wb, df_cur, sacare_prices, dates: dict):
+    print(f'  Sheet 25: {EMP_MIX_SHEET}', flush=True)
+    ws = _reset_detail_sheet(wb, EMP_MIX_SHEET, freeze='B1')
+    ws.column_dimensions['A'].width = 22
+    for c in range(2, 11):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 13
+    st = _detail_styles()
+    cats = [('主機', 'rev_3001'), ('原廠配件（含 AirPods）', 'rev_3002'), ('3PP', 'rev_3003'), ('保固（AC+SA）', 'warranty_rev')]
+    row = 1
+    for pname, s, e in (('本週', dates['wk_start'], dates['wk_end']), ('本月', dates['mo_start'], dates['mo_end'])):
+        f = period(df_cur, s, e)
+        row = _title_row(ws, row, f'{_period_label(pname, s, e)}（占比：綠＝高於門市、紅＝低於門市）', 10, st)
+        _head_cells(ws, row, 1, ['員工'] + [c for c, _ in cats] + ['合計', '主機 占比', '原廠配件 占比', '3PP 占比', '保固 占比'], st)
+        ws.row_dimensions[row].height = 36
+        row += 1
+        store = calc_metrics(f, sacare_prices)
+        store_tot = sum(store[k] for _, k in cats)
+        store_share = [safe_rate(store[k], store_tot) if store_tot else None for _, k in cats]
+        for label, f_emp in _emp_frames(f):
+            m = store if label == '門市合計' else calc_metrics(f_emp, sacare_prices)
+            amts = [m[k] for _, k in cats]
+            tot = sum(amts)
+            shares = [safe_rate(a, tot) if tot else None for a in amts]
+            colors = [None] * 5 + ([None] * 4 if label == '門市合計' else [_vs_color(v, a) for v, a in zip(shares, store_share)])
+            row = _value_row(ws, row, label, amts + [tot] + shares, ['#,##0'] * 5 + ['0.0%'] * 4, st,
+                             bold=label == '門市合計', colors=colors)
+        row += 1
+    ws.cell(row=row, column=1).value = '金額同第 6 頁口徑（含訂金、扣除退貨；SA Care 以價目表計），依結帳員工歸屬。'
+    ws.cell(row=row, column=1).font = st['font']
+
+
+# ── 26. 個人近 8 週走勢 ──
+def fill_sheet_emp_trend(wb, df_cur, sacare_prices, dates: dict, bundle_weeks=None, fiscal_start=None):
+    """bundle_weeks：[(週起日, 搭售統計 rows)…] 由舊到新 8 週；None＝搭售率留空。"""
+    print(f'  Sheet 26: {EMP_TREND_SHEET}', flush=True)
+    ws = _reset_detail_sheet(wb, EMP_TREND_SHEET, freeze='C2')
+    ws.column_dimensions['A'].width = 22
+    ws.column_dimensions['B'].width = 14
+    for c in range(3, 13):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 11
+    st = _detail_styles()
+    starts = [dates['wk_start'] - timedelta(days=7 * i) for i in range(7, -1, -1)]
+    labels = []
+    for s in starts:
+        wk = f'W{compute_fiscal_week_number(s, fiscal_start)[1]}\n' if fiscal_start else ''
+        labels.append(f'{wk}{s:%m/%d}~{s + timedelta(days=6):%m/%d}')
+    _head_cells(ws, 1, 1, ['員工', '項目'] + labels + ['8 週平均', '本週 vs 平均'], st)
+    ws.row_dimensions[1].height = 36
+    frames = [period(df_cur, s, s + timedelta(days=6)) for s in starts]
+    sa_codes = set(sacare_prices.keys())
+    bundle_by_week = None
+    if bundle_weeks:
+        bundle_by_week = [{r['empId']: r for r in rows} for _, rows in bundle_weeks]
+
+    def bundle_rate(i, code):
+        if bundle_by_week is None:
+            return None
+        rows = list(bundle_by_week[i].values()) if code is None else [bundle_by_week[i].get(code)]
+        rows = [r for r in rows if r]
+        sm = sum(r[k]['m'] for r in rows for k in ('cpu', 'iphone', 'ipad', 'watch', 'airpods'))
+        ss = sum(r[k]['s'] for r in rows for k in ('cpu', 'iphone', 'ipad', 'watch', 'airpods'))
+        return round(ss / sm, 2) if sm else None
+
+    items = [('業績', '#,##0', lambda i, f, code: calc_metrics(f, sacare_prices)['total_rev']),
+             ('3PP 搭售率', '0.00', lambda i, f, code: bundle_rate(i, code)),
+             ('3PP 平均單價', '#,##0', lambda i, f, code: _avg_price(_non_sa(f, sa_codes)[lambda x: x['類別3代碼'] == 3003.0]))]
+    row = 2
+    people = [(_emp_label(code, name), code) for code, name in EMPLOYEES] + [('門市合計', None)]
+    for label, code in people:
+        for k, (item, fmt, fn) in enumerate(items):
+            vals = [fn(i, f if code is None else f[f['員工代碼'] == code], code) for i, f in enumerate(frames)]
+            got = [v for v in vals if v is not None]
+            avg = sum(got) / len(got) if got else None
+            cur = vals[-1]
+            diff = (cur - avg) if (cur is not None and avg is not None) else None
+            cells = [label if k == 0 else '', item] + vals + [round(avg, 2) if avg is not None else None, diff]
+            for j, v in enumerate(cells):
+                cell = ws.cell(row=row, column=1 + j)
+                cell.value, cell.border = v, st['border']
+                cell.font = st['bold'] if (code is None or j == 0) else st['font']
+                if j >= 2:
+                    cell.number_format = fmt if j < 11 else (
+                        '[Color10]+0.00;[Red]-0.00;0.00' if fmt == '0.00' else '[Color10]+#,##0;[Red]-#,##0;0')
+            row += 1
+        ws.merge_cells(start_row=row - 3, start_column=1, end_row=row - 1, end_column=1)
+        ws.cell(row=row - 3, column=1).alignment = st['left']
+    ws.cell(row=row + 1, column=1).value = ('業績同第 6 頁總營業額口徑；3PP 搭售率同第 10 頁（配件數÷搭售台數）；'
+                                            '3PP 平均單價＝3PP 金額÷件數（不含贈品／訂金／尾款）。最右欄＝本週減 8 週平均。')
+    ws.cell(row=row + 1, column=1).font = st['font']
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
     args = parse_args()
