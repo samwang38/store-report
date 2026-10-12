@@ -411,7 +411,7 @@ def standardize_remote_records(records):
                 "促銷活動名稱": text(rec.get("MC_NAME")),
                 # 尾款列 NET=0，實際出貨金額在 LINE_TOTAL_AFTDISC（第 6 頁「訂單出貨金額(b)」）
                 "折後金額": number(rec.get("LINE_TOTAL_AFTDISC")),
-                "活動細項": text(rec.get("SUB_MC_REMARK")),   # 第 22 頁：ERP 子活動說明
+                "活動細項": text(rec.get("SUB_MC_REMARK")),   # 主機活動頁：ERP 子活動說明
             }
         )
     if not rows:
@@ -485,7 +485,7 @@ _C6_NAME_CACHE = {}
 
 
 def load_c6_names():
-    """ERP 類別 6 名稱（STKCAT6），供第 19 頁 3PP 細分列名；名稱去掉括號後的韓文。查詢失敗回空 dict（列名改顯示代碼）。"""
+    """ERP 類別 6 名稱（STKCAT6），供 3PP 類別細分頁列名；名稱去掉括號後的韓文。查詢失敗回空 dict（列名改顯示代碼）。"""
     if not _C6_NAME_CACHE:
         headers, rows = run_remote(
             "select cat6_id, name from stkcat6 where org_id is null", timeout=60)  # 類別主檔不分公司（org_id 空值）
@@ -502,7 +502,7 @@ _C4_NAME_CACHE = {}
 
 
 def load_c4_names():
-    """ERP 類別 4 名稱（STKCAT4），供第 24 頁細項平均單價欄名。查詢失敗由呼叫端處理（欄名改顯示代碼）。"""
+    """ERP 類別 4 名稱（STKCAT4），供個人客單價頁細項平均單價欄名。查詢失敗由呼叫端處理（欄名改顯示代碼）。"""
     if not _C4_NAME_CACHE:
         headers, rows = run_remote("select cat4_id, name from stkcat4 where org_id is null", timeout=60)
         for row in rows:
@@ -529,7 +529,7 @@ def _strip_korean(name):
 
 
 def load_launch_df(shop_id, wk_end):
-    """第 23 頁新機上市追蹤：只抓追蹤機種（新機與對照機種）近 3 年的銷售列。"""
+    """新機上市追蹤頁：只抓追蹤機種（新機與對照機種）近 3 年的銷售列。"""
     return remote_sales_df(shop_id, [(wk_end - timedelta(days=3 * 366), wk_end)],
                            extra_where="l.cat6_id in (" + ",".join(str(c) for c in engine.LAUNCH_C6) + ")")
 
@@ -700,7 +700,7 @@ def load_epb_data(shop_id, dates, quarter_start):
     # 納入 Sheet 16/17 年對年區間（截止日可由前端自訂，可能晚於週結束日）
     yoy_cur_s, yoy_cur_e, yoy_prv_s, yoy_prv_e = engine._yoy_periods(dates)
     # df_cur 涵蓋上週/本週/本月/上月，df_prev 涵蓋去年同期；納入自訂覆寫區間邊界以確保資料齊全
-    # 第 27 頁近 8 週走勢：往前多抓 7 週
+    # 個人近 8 週走勢頁：往前多抓 7 週
     cur_start = min(dates["ytd_cur_start"], dates["prev_wk_start"], dates["wk_start"],
                     dates["mo_start"], dates["lm_start"], quarter_start, yoy_cur_s,
                     dates["wk_start"] - timedelta(days=49))
@@ -837,7 +837,7 @@ def load_bundle_stats(shop_id, wk_start, wk_end, mo_start, mo_end, fiscal_start,
     「本月」區間，與 Sheet 12/14/15/16 等其他月報表口徑一致（含進階自訂區間覆寫）。
     """
     periods = {("w", 0): (wk_start, wk_end)}
-    for i in range(1, 8):   # 前 3 週給第 10 頁；前 7 週給第 27 頁近 8 週走勢
+    for i in range(1, 8):   # 前 3 週給第 10 頁；前 7 週給個人近 8 週走勢頁
         s = wk_start - timedelta(days=7 * i)
         periods[("w", i)] = (s, s + timedelta(days=6))
     periods[("m", 0)] = (mo_start, mo_end)
@@ -1679,23 +1679,23 @@ def build_report_workbook(payload, log=lambda m: None):
                         gross_bi={"cur": store_gross.get("cur"), "prv": store_gross.get("prv")} if store_gross else None)
     engine.fill_sheet11(wb["17.3PP YOY"], df_cur, df_prev, sacare_prices, dates)
 
-    log("填入 18-21 差異明細比較／3PP 類別細分／3PP 熱門商品…")
+    log("填入分析頁：商品明細比較／3PP 類別細分／經營結構比較／3PP 熱門商品…")
     try:
         engine.C6_NAMES = load_c6_names()
     except Exception as exc:  # 名稱查不到不影響數字，列名改顯示代碼
-        log(f"  ⚠ 類別 6 名稱查詢失敗，第 19 頁 3PP 細分列名改顯示代碼：{exc}")
+        log(f"  ⚠ 類別 6 名稱查詢失敗，3PP 類別細分頁列名改顯示代碼：{exc}")
     engine.fill_sheet_detail_products(wb, df_cur, df_prev, sacare_prices, dates)
     engine.fill_sheet_tpp_detail(wb, df_cur, df_prev, sacare_prices, dates)
     engine.fill_sheet_detail_ops(wb, df_cur, df_prev, sacare_prices, dates)
     engine.fill_sheet_hot_series(wb, df_cur, sacare_prices, dates)
 
-    log("填入 22-23 主機活動／新機上市追蹤…")
+    log("填入分析頁：主機活動／新機上市追蹤…")
     engine.fill_sheet_promo(wb, df_cur, sacare_prices, dates)
     try:
         df_launch = load_launch_df(shop_id, wk_end)
     except Exception as exc:  # 查不到就留空，報表照常
         df_launch = None
-        log(f"  ⚠ 新機上市追蹤資料查詢失敗，第 23 頁留空：{exc}")
+        log(f"  ⚠ 新機上市追蹤資料查詢失敗，新機上市追蹤頁留空：{exc}")
     engine.fill_sheet_launch(wb, df_launch, dates)
 
     log("查詢第 12 頁 ERP BI（總業績/3PP/原廠/Apple毛利/3PP毛利）…")
@@ -1726,11 +1726,11 @@ def build_report_workbook(payload, log=lambda m: None):
         log("未填入搭售統計，清空 10-11 模板預設值…")
         clear_bundle_sheets(wb)
 
-    log("填入 24-27 員工分析…")
+    log("填入分析頁：員工分析…")
     try:
         engine.C4_NAMES = load_c4_names()
     except Exception as exc:  # 名稱查不到不影響數字
-        log(f"  ⚠ 類別 4 名稱查詢失敗，第 24 頁欄名改顯示代碼：{exc}")
+        log(f"  ⚠ 類別 4 名稱查詢失敗，個人客單價頁欄名改顯示代碼：{exc}")
     engine.fill_sheet_emp_aov(wb, df_cur, sacare_prices, dates)
     engine.fill_sheet_emp_warranty(wb, df_cur, sacare_prices, dates)
     engine.fill_sheet_emp_mix(wb, df_cur, sacare_prices, dates)
@@ -1789,11 +1789,11 @@ def _xlsx_bytes(wb):
 
 
 def build_report_excel(payload, log=lambda m: None):
-    """回傳 ([(檔名, bytes), ...], meta)：週報（1–17 頁）與分析（18–27 頁）各一個檔案。"""
+    """回傳 ([(檔名, bytes), ...], meta)：週報（1–17 頁）與分析（engine.ANALYSIS_SHEETS）各一個檔案。"""
     wb, meta = build_report_workbook(payload, log=log)
     log("儲存 Excel…")
     analysis = [n for n in engine.ANALYSIS_SHEETS if n in wb.sheetnames]
-    wb_a = openpyxl.load_workbook(BytesIO(_xlsx_bytes(wb)))   # 整本複製一份，分析檔只留 18–27 頁
+    wb_a = openpyxl.load_workbook(BytesIO(_xlsx_bytes(wb)))   # 整本複製一份，分析檔只留分析頁
     for name in wb_a.sheetnames:
         if name not in analysis:
             del wb_a[name]

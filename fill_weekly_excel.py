@@ -1518,9 +1518,9 @@ def fill_sheet11(ws, df_cur, df_prev, sacare_prices, dates: dict):
 # ─── Sheet 18/20：差異明細比較（週對週／本月對去年同月同期／年累積）────────────────
 # 每列並排三組比較：上週|本週、去年同月同期|本月、去年累積|今年累積（同第 7、16/17 頁的區間）。
 # 兩頁由程式建立（不在模板內），Top 10 等列數可變動。
-DETAIL_SHEET_PRODUCTS = '18.商品明細比較'
-DETAIL_SHEET_OPS      = '20.經營結構比較'
-TPP_DETAIL_SHEET      = '19.3PP 類別細分'
+DETAIL_SHEET_PRODUCTS = '商品明細比較'
+DETAIL_SHEET_OPS      = '經營結構比較'
+TPP_DETAIL_SHEET      = '3PP 類別細分'
 DETAIL_GROUPS = [('週對週', '上週', '本週', '週差', '週差%'),
                  ('本月 vs 去年同月同期', '去年同期', '本月', '月差', '月差%'),
                  ('年累積 vs 去年累積', '去年累積', '今年累積', '年差', '年差%')]
@@ -1774,7 +1774,7 @@ def _model_units(d, c3, c6_set, must_inc, must_exc):
 
 
 def fill_sheet_detail_products(wb, df_cur, df_prev, sacare_prices, dates: dict):
-    print(f'  Sheet 18: {DETAIL_SHEET_PRODUCTS}', flush=True)
+    print(f'  分析頁：{DETAIL_SHEET_PRODUCTS}', flush=True)
     sa_codes = set(sacare_prices.keys())
     frames = _detail_frames(df_cur, df_prev, dates)
     ws = _reset_detail_sheet(wb, DETAIL_SHEET_PRODUCTS)
@@ -1845,7 +1845,7 @@ TPP_GROUP_STARTS = (2, 10, 18)
 
 
 def _write_tpp_header(ws, st):
-    """第 19 頁表頭：每組 8 欄＝前期數量、前期營業額、本期數量、本期營業額、數量差異、數量差異%、金額差異、金額差異%。"""
+    """3PP 類別細分頁表頭：每組 8 欄＝前期數量、前期營業額、本期數量、本期營業額、數量差異、數量差異%、金額差異、金額差異%。"""
     from openpyxl.styles import Border
     ws.merge_cells(start_row=1, start_column=1, end_row=2, end_column=1)
     ws.cell(row=1, column=1).value = '項目'
@@ -1892,9 +1892,9 @@ def _write_qty_rev_row(ws, row, label, qtys, revs, st, role=None):
 
 
 def fill_sheet_tpp_detail(wb, df_cur, df_prev, sacare_prices, dates: dict):
-    """第 19 頁：3PP 類別 4 → 類別 6 細分，數量與營業額並列（類別 4 小計營業額口徑同第 7/17 頁；列名取第 7 頁 B 欄）。
+    """3PP 類別細分頁：3PP 類別 4 → 類別 6 細分，數量與營業額並列（類別 4 小計營業額口徑同第 7/17 頁；列名取第 7 頁 B 欄）。
     類別 6 依今年累積營業額由大到小排，六期營業額全為 0 的略過。數量＝銷售＋尾款－銷退（含贈品）。"""
-    print(f'  Sheet 19: {TPP_DETAIL_SHEET}', flush=True)
+    print(f'  分析頁：{TPP_DETAIL_SHEET}', flush=True)
     sa_codes = set(sacare_prices.keys())
     frames = _detail_frames(df_cur, df_prev, dates)
     ws = _reset_detail_sheet(wb, TPP_DETAIL_SHEET)
@@ -1966,7 +1966,7 @@ def _voucher_rows(d):
 
 
 def fill_sheet_detail_ops(wb, df_cur, df_prev, sacare_prices, dates: dict):
-    print(f'  Sheet 20: {DETAIL_SHEET_OPS}', flush=True)
+    print(f'  分析頁：{DETAIL_SHEET_OPS}', flush=True)
     sa_codes = set(sacare_prices.keys())
     frames = _detail_frames(df_cur, df_prev, dates)
     ws = _reset_detail_sheet(wb, DETAIL_SHEET_OPS)
@@ -2022,7 +2022,7 @@ def fill_sheet_detail_ops(wb, df_cur, df_prev, sacare_prices, dates: dict):
 # ─── Sheet 21：3PP 熱門商品（本週／本月，同款不同色合併）─────────────────────────
 # 取該期 3PP 營業額前 10 大的「類別 4＋類別 6」，每組依數量列前 5 個系列。
 # ERP 商品主檔沒有系列／顏色欄位，系列由品名去掉顏色字判定（同類別 4＋類別 6 內品名相同＝同系列）。
-HOT_SERIES_SHEET  = '21.3PP 熱門商品'
+HOT_SERIES_SHEET  = '3PP 熱門商品'
 HOT_SERIES_GROUPS = 10   # 每期展開的類別數
 HOT_SERIES_TOP    = 5    # 每類列出的系列數
 SERIES_COLOR_RE = re.compile(
@@ -2119,7 +2119,7 @@ def _hot_series_block(ws, col0, title, d, c4_labels, st):
 
 
 def fill_sheet_hot_series(wb, df_cur, sacare_prices, dates: dict):
-    print(f'  Sheet 21: {HOT_SERIES_SHEET}', flush=True)
+    print(f'  分析頁：{HOT_SERIES_SHEET}', flush=True)
     sa_codes = set(sacare_prices.keys())
     ws = _reset_detail_sheet(wb, HOT_SERIES_SHEET, freeze='A3')
     for col, width in zip('ABCDEFGHIJK', (6, 48, 6, 8, 11, 3, 6, 48, 6, 8, 11)):
@@ -2139,12 +2139,12 @@ def fill_sheet_hot_series(wb, df_cur, sacare_prices, dates: dict):
 
 
 # ─── Sheet 22–27：主機活動／新機上市追蹤／員工分析（分析檔）────────────────────
-PROMO_SHEET       = '22.主機活動'
-LAUNCH_SHEET      = '23.新機上市追蹤'
-EMP_AOV_SHEET     = '24.個人客單價'
-EMP_WARRANTY_SHEET = '25.個人保固搭售率'
-EMP_MIX_SHEET     = '26.個人業績組成'
-EMP_TREND_SHEET   = '27.個人近8週走勢'
+PROMO_SHEET       = '主機活動'
+LAUNCH_SHEET      = '新機上市追蹤'
+EMP_AOV_SHEET     = '個人客單價'
+EMP_WARRANTY_SHEET = '個人保固搭售率'
+EMP_MIX_SHEET     = '個人業績組成'
+EMP_TREND_SHEET   = '個人近8週走勢'
 ANALYSIS_SHEETS = [DETAIL_SHEET_PRODUCTS, TPP_DETAIL_SHEET, DETAIL_SHEET_OPS, HOT_SERIES_SHEET, PROMO_SHEET, LAUNCH_SHEET,
                    EMP_AOV_SHEET, EMP_WARRANTY_SHEET, EMP_MIX_SHEET, EMP_TREND_SHEET]
 
@@ -2183,7 +2183,7 @@ def _c4_name(code) -> str:
 
 
 def _gift_mask(d):
-    """贈品列（同第 21 頁）：折扣 ≥ 80 或金額 0 的非退貨列。"""
+    """贈品列（同 3PP 熱門商品頁）：折扣 ≥ 80 或金額 0 的非退貨列。"""
     return (d['折扣'].fillna(0) >= 80) | ((d['NET'].abs() == 0) & (d['交易類型'] != '銷退'))
 
 
@@ -2260,7 +2260,7 @@ def _period_label(name, s, e):
 
 # ── 22. 主機活動 ──
 def fill_sheet_promo(wb, df_cur, sacare_prices, dates: dict):
-    print(f'  Sheet 22: {PROMO_SHEET}', flush=True)
+    print(f'  分析頁：{PROMO_SHEET}', flush=True)
     ws = _reset_detail_sheet(wb, PROMO_SHEET, freeze='B3')
     ws.column_dimensions['A'].width = 64
     st = _detail_styles()
@@ -2303,13 +2303,13 @@ def fill_sheet_promo(wb, df_cur, sacare_prices, dates: dict):
         for a, uw, um in stats:
             row = _value_row(ws, row, a, [uw, safe_rate(uw, tw) if tw else None, um, safe_rate(um, tm) if tm else None],
                              ['#,##0', '0.0%', '#,##0', '0.0%'], st)
-    ws.cell(row=row + 1, column=1).value = '活動細項取 ERP 子活動說明；台數含尾款、扣除退貨，同第 1、18 頁口徑。'
+    ws.cell(row=row + 1, column=1).value = '活動細項取 ERP 子活動說明；台數含尾款、扣除退貨，同第 1 頁與商品明細比較頁口徑。'
     ws.cell(row=row + 1, column=1).font = st['font']
 
 
 # ── 23. 新機上市追蹤 ──
 def fill_sheet_launch(wb, df_track, dates: dict):
-    print(f'  Sheet 23: {LAUNCH_SHEET}', flush=True)
+    print(f'  分析頁：{LAUNCH_SHEET}', flush=True)
     ws = _reset_detail_sheet(wb, LAUNCH_SHEET, freeze='A1')
     for col, width in zip('ABCDEFGH', (10, 16, 11, 11, 16, 11, 11, 11)):
         ws.column_dimensions[col].width = width
@@ -2372,7 +2372,7 @@ def fill_sheet_launch(wb, df_track, dates: dict):
 
 # ── 24. 個人客單價 ──
 def fill_sheet_emp_aov(wb, df_cur, sacare_prices, dates: dict):
-    print(f'  Sheet 24: {EMP_AOV_SHEET}', flush=True)
+    print(f'  分析頁：{EMP_AOV_SHEET}', flush=True)
     ws = _reset_detail_sheet(wb, EMP_AOV_SHEET, freeze='B3')
     ws.column_dimensions['A'].width = 22
     st = _detail_styles()
@@ -2435,14 +2435,14 @@ def fill_sheet_emp_aov(wb, df_cur, sacare_prices, dates: dict):
             row = _value_row(ws, row, label, vals, ['#,##0'] * len(vals), st, bold=label == '門市合計', colors=colors)
         qty = [int(g.loc[(g['類別4代碼'] == c) & ~_gift_mask(g), '數量'].sum()) for c in c4s]
         row = _value_row(ws, row, '門市件數', qty, ['#,##0'] * len(qty), st)
-    ws.cell(row=row + 1, column=1).value = ('筆數＝成交單（有銷售列且非整單退貨，同第 20 頁）中含該類商品的單數；業績＝這些單裡該類商品的金額；'
+    ws.cell(row=row + 1, column=1).value = ('筆數＝成交單（有銷售列且非整單退貨，同經營結構比較頁）中含該類商品的單數；業績＝這些單裡該類商品的金額；'
                                             '客單價＝業績÷筆數。綠＝高於門市、紅＝低於門市。')
     ws.cell(row=row + 1, column=1).font = st['font']
 
 
 # ── 25. 個人保固搭售率 ──
 def fill_sheet_emp_warranty(wb, df_cur, sacare_prices, dates: dict):
-    print(f'  Sheet 25: {EMP_WARRANTY_SHEET}', flush=True)
+    print(f'  分析頁：{EMP_WARRANTY_SHEET}', flush=True)
     ws = _reset_detail_sheet(wb, EMP_WARRANTY_SHEET, freeze='B1')
     ws.column_dimensions['A'].width = 22
     for c in range(2, 2 + 4 * len(WARRANTY_DEVICES)):
@@ -2476,13 +2476,13 @@ def fill_sheet_emp_warranty(wb, df_cur, sacare_prices, dates: dict):
                 colors += [None, None, None, None if label == '門市合計' else _vs_color(rate, store_rate[i])]
             row = _value_row(ws, row, label, vals, fmts, st, bold=label == '門市合計', colors=colors)
         row += 1
-    ws.cell(row=row, column=1).value = '台數、AppleCare（ACPP）與 SA Care 套數同第 18 頁「保固搭售明細」口徑，依結帳員工歸屬，退貨扣回。'
+    ws.cell(row=row, column=1).value = '台數、AppleCare（ACPP）與 SA Care 套數同商品明細比較頁「保固搭售明細」口徑，依結帳員工歸屬，退貨扣回。'
     ws.cell(row=row, column=1).font = st['font']
 
 
 # ── 26. 個人業績組成 ──
 def fill_sheet_emp_mix(wb, df_cur, sacare_prices, dates: dict):
-    print(f'  Sheet 26: {EMP_MIX_SHEET}', flush=True)
+    print(f'  分析頁：{EMP_MIX_SHEET}', flush=True)
     ws = _reset_detail_sheet(wb, EMP_MIX_SHEET, freeze='B1')
     ws.column_dimensions['A'].width = 22
     for c in range(2, 11):
@@ -2516,7 +2516,7 @@ def fill_sheet_emp_mix(wb, df_cur, sacare_prices, dates: dict):
 # ── 27. 個人近 8 週走勢 ──
 def fill_sheet_emp_trend(wb, df_cur, sacare_prices, dates: dict, bundle_weeks=None, fiscal_start=None):
     """bundle_weeks：[(週起日, 搭售統計 rows)…] 由舊到新 8 週；None＝搭售率留空。"""
-    print(f'  Sheet 27: {EMP_TREND_SHEET}', flush=True)
+    print(f'  分析頁：{EMP_TREND_SHEET}', flush=True)
     ws = _reset_detail_sheet(wb, EMP_TREND_SHEET, freeze='C2')
     ws.column_dimensions['A'].width = 22
     ws.column_dimensions['B'].width = 14
@@ -2588,7 +2588,7 @@ def fill_sheet_emp_trend(wb, df_cur, sacare_prices, dates: dict, bundle_weeks=No
             row += 1
         # 不合併 A 欄：直向合併在 Mac 預覽（QuickLook／Numbers）會把後面幾列的格子往右錯位
     ws.cell(row=row + 1, column=1).value = ('業績同第 6 頁總營業額口徑；3PP 搭售率同第 10 頁（配件數÷搭售台數）；'
-                                            '保固搭售率＝(AppleCare＋SA Care) 套數÷主機台數（同第 25 頁）；'
+                                            '保固搭售率＝(AppleCare＋SA Care) 套數÷主機台數（同個人保固搭售率頁）；'
                                             '3PP 平均單價＝3PP 金額÷件數（不含贈品／訂金／尾款）。最右欄＝本週減 8 週平均。')
     ws.cell(row=row + 1, column=1).font = st['font']
 
