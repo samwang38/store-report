@@ -48,6 +48,7 @@
   const logBox        = $('logBox');
   const downloadBtn   = $('downloadBtn');
   const downloadInfo  = $('downloadInfo');
+  const downloadAnalysisBtn = $('downloadAnalysisBtn');
   const showLogBtn    = $('showLogBtn');
   const downloadLogBox = $('downloadLogBox');
   const resetBtn      = $('resetBtn');
@@ -679,9 +680,14 @@
         stopPoll();
         progressBar.style.width = '100%';
         progressLabel.textContent = '完成！';
-        downloadInfo.textContent = `報表已產生完成（${data.filename || '門市報表.xlsx'}）`;
+        const files = data.files || [];
+        downloadInfo.textContent = `報表已產生完成（${files.join('、') || '門市報表.xlsx'}）`;
         downloadBtn.onclick = () => {
-          window.location.href = `/api/download?jobId=${currentJobId}`;
+          window.location.href = `/api/download?jobId=${currentJobId}&part=0`;
+        };
+        downloadAnalysisBtn.hidden = files.length < 2;
+        downloadAnalysisBtn.onclick = () => {
+          window.location.href = `/api/download?jobId=${currentJobId}&part=1`;
         };
         downloadLogBox.hidden = true;
         showLogBtn.textContent = '顯示 log';

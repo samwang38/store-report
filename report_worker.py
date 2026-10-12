@@ -130,15 +130,14 @@ def maybe_update(cfg):
 
 
 # ─── 寄信 ─────────────────────────────────────────────────
-def send_mail(cfg, to, subject, body, attachment=None):
+def send_mail(cfg, to, subject, body, attachments=()):
     s_cfg = cfg["smtp"]
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = s_cfg["from"]
     msg["To"] = to
     msg.set_content(body)
-    if attachment:
-        name, data = attachment
+    for name, data in attachments:
         msg.add_attachment(data, maintype="application",
                            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=name)
     s, _ = connect(s_cfg["host"], int(s_cfg["port"]), timeout=60)
@@ -202,7 +201,7 @@ def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, t
     with shoppertrak_traffic.credentials_override(t.get("username"), t.get("password")), \
             mysetup.aliases_override(ms.get("rules") or []), \
             (mycoach_client.session_override(mc_session) if mc_session is not None else nullcontext()):
-        filename, body, meta = server.build_report_excel(payload, log=lambda m: log(f"  {m}"))
+        files, meta = server.build_report_excel(payload, log=lambda m: log(f"  {m}"))
     ms_result = meta["sourceMeta"].get("mysetup") if ms.get("data") else None
     notice = ""
     if ms_result and ms_result["unmatched"]:
@@ -214,11 +213,12 @@ def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, t
                    "下次產出前請在 LINE「產出週報」頁先輸入驗證碼登入。\n")
     span = f"{wk_start:%m/%d}–{wk_end:%m/%d}"
     send_mail(cfg, to, f"【週報】{shop_name} {span}",
-              f"{manager_name or '店長'} 你好：\n\n附件是 {shop_name} {wk_start:%Y/%m/%d}（日）到 {wk_end:%Y/%m/%d}（六）的週報。\n"
+              f"{manager_name or '店長'} 你好：\n\n附件是 {shop_name} {wk_start:%Y/%m/%d}（日）到 {wk_end:%Y/%m/%d}（六）的週報"
+              f"{'，以及另附的分析（共 2 個 Excel）' if len(files) > 1 else ''}。\n"
               f"{notice}"
               "數字有疑問，直接在 LINE 告訴 Sam，確認後修正重寄不扣次。\n\n週報小幫手",
-              attachment=(filename, body))
-    log(f"  已寄出 {filename}（{len(body):,} bytes，{time.time() - t0:.0f} 秒）")
+              attachments=files)
+    log(f"  已寄出 " + "、".join(f"{name}（{len(body):,} bytes）" for name, body in files) + f"，{time.time() - t0:.0f} 秒")
     return ms_result
 
 

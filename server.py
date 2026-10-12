@@ -1718,16 +1718,35 @@ def build_report_workbook(payload, log=lambda m: None):
     }
 
 
-def build_report_excel(payload, log=lambda m: None):
-    wb, meta = build_report_workbook(payload, log=log)
-    log("儲存 Excel…")
+def _xlsx_bytes(wb):
     stream = BytesIO()
     wb.save(stream)
-    stream.seek(0)
+    return stream.getvalue()
+
+
+def build_report_excel(payload, log=lambda m: None):
+    """回傳 ([(檔名, bytes), ...], meta)：週報（1–17 頁）與分析（18–20 頁）各一個檔案。"""
+    wb, meta = build_report_workbook(payload, log=log)
+    log("儲存 Excel…")
+    analysis = [n for n in (engine.DETAIL_SHEET_PRODUCTS, engine.DETAIL_SHEET_OPS, engine.HOT_SERIES_SHEET)
+                if n in wb.sheetnames]
+    wb_a = openpyxl.load_workbook(BytesIO(_xlsx_bytes(wb)))   # 整本複製一份，分析檔只留 18–20 頁
+    for name in wb_a.sheetnames:
+        if name not in analysis:
+            del wb_a[name]
+    for name in analysis:
+        del wb[name]
+    for book in (wb, wb_a):
+        book.active = 0
+        for ws in book.worksheets:
+            ws.sheet_view.tabSelected = ws is book.worksheets[0]
     periods = meta["periods"]
     shop_id = meta["sourceMeta"].get("shopId", safe_shop_id(payload.get("shopId")))
-    filename = f"門市報表_{shop_id}_{periods['wk_start']}~{periods['wk_end']}.xlsx"
-    return filename, stream.getvalue(), meta
+    span = f"{shop_id}_{periods['wk_start']}~{periods['wk_end']}"
+    files = [(f"門市報表_{span}.xlsx", _xlsx_bytes(wb))]
+    if analysis:
+        files.append((f"門市分析_{span}.xlsx", _xlsx_bytes(wb_a)))
+    return files, meta
 
 
 # ─── Job 管理（仿北一區週報-app）───────────────────────────────────────
@@ -1749,13 +1768,12 @@ def _run_job(job_id, payload):
                 traffic_mod.set_employee_count(payload["shopId"], payload["employeeCount"])
             except Exception:
                 pass
-        filename, body, meta = build_report_excel(payload, log=log)
+        files, meta = build_report_excel(payload, log=log)
         with _LOCK:
             JOBS[job_id]["status"] = "done"
-            JOBS[job_id]["result"] = body
-            JOBS[job_id]["filename"] = filename
+            JOBS[job_id]["files"] = files
             JOBS[job_id]["meta"] = meta
-        log(f"✓ 完成！{filename}（{len(body):,} bytes）")
+        log("✓ 完成！" + "、".join(f"{name}（{len(body):,} bytes）" for name, body in files))
     except Exception:
         tb = traceback.format_exc()
         with _LOCK:
@@ -1935,7 +1953,7 @@ class Handler(SimpleHTTPRequestHandler):
                 resp = {
                     "status": job["status"],
                     "messages": list(job["messages"]),
-                    "filename": job.get("filename", ""),
+                    "files": [name for name, _ in job.get("files", [])],
                 }
                 if job["status"] == "error":
                     resp["error"] = job.get("error", "未知錯誤")
@@ -1950,7 +1968,15 @@ class Handler(SimpleHTTPRequestHandler):
                 if not job or job["status"] != "done":
                     self.send_json(400, {"error": "檔案尚未就緒"})
                     return
-                self.send_xlsx(job["filename"], job["result"])
+                files = job["files"]
+                try:
+                    idx = int(qs.get("part", ["0"])[0])
+                except ValueError:
+                    idx = 0
+                if not 0 <= idx < len(files):
+                    self.send_json(404, {"error": "找不到檔案"})
+                    return
+                self.send_xlsx(*files[idx])
                 return
         except Exception as exc:
             self.send_json(500, {"error": str(exc)})
