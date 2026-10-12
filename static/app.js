@@ -1,5 +1,7 @@
 (() => {
   const $ = id => document.getElementById(id);
+  // 網頁檔已更新、但背景伺服器還是更新前那個：新功能的 API 會回 404
+  const STALE_SERVER_MSG = '伺服器還是舊版：請關閉「門市報表製作」的終端機視窗，再重新雙擊啟動檔。';
 
   const configCard      = $('configCard');
   const shoppertrakCard = $('shoppertrakCard');
@@ -505,6 +507,7 @@
     if (withEmployees) msStatus.textContent = '載入本店員工名單中（需連 EPB）…';
     try {
       const res = await fetch(`/api/mysetup/aliases?shopId=${encodeURIComponent(shopId)}&employees=${withEmployees ? 1 : 0}`);
+      if (res.status === 404) throw new Error(STALE_SERVER_MSG);
       const data = await res.json();
       ms.rules = data.rules || [];
       ms.unmatched = data.unmatched || [];
@@ -567,6 +570,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shopId: shopSelect.value, rules }),
       });
+      if (res.status === 404) throw new Error(STALE_SERVER_MSG);
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || '儲存失敗');
       ms.rules = data.rules || [];
@@ -589,9 +593,6 @@
     });
   }
 
-
-  // 網頁檔已更新、但背景伺服器還是更新前那個：新功能的 API 會回 404
-  const STALE_SERVER_MSG = '伺服器還是舊版：請關閉「門市報表製作」的終端機視窗，再重新雙擊啟動檔。';
 
   // ─── MyCoach 登入（充值數）：每次產報前輸入驗證碼登入 ─────────────────
   const mycoachCard = $('mycoachCard');
@@ -622,8 +623,8 @@
   async function mcCall(path, body) {
     const res = await fetch(path, body === undefined ? undefined : {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const data = await res.json();
     if (res.status === 404) throw new Error(STALE_SERVER_MSG);
+    const data = await res.json();
     if (!res.ok) throw new Error(data.error || '操作失敗');
     renderMycoach(data);
     return data;
