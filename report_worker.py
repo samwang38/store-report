@@ -16,6 +16,7 @@
 手動測試（不經 Worker，直接產一份寄出）：
   python3 report_worker.py --local 004 2026-10-10 收件人@studioa.com.tw [編制人數]
 """
+import base64
 import json
 import os
 import socket
@@ -26,6 +27,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import nullcontext
 from datetime import date, timedelta
 from email.message import EmailMessage
 from pathlib import Path
@@ -170,9 +172,10 @@ def epb_reachable(timeout=3):
 
 
 def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, to, manager_name="", traffic=None,
-                   mysetup_job=None):
+                   mysetup_job=None, mycoach_set=False):
     """mysetup_job：Worker 帶來的 {filename, data(base64), rules}（店長在 LINE 上傳的 Personal Setup Excel 與名稱對照）。
     回傳 MySetup 結果 {unmatched, employees} 供回報 Worker；沒帶檔案時回傳 None。"""
+    import mycoach_client
     import mysetup
     import server
     import shoppertrak_traffic
@@ -190,8 +193,15 @@ def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, t
     if ms.get("data"):
         payload["mysetupFile"] = ms["data"]
         log(f"  使用門市上傳的 Personal Setup Excel：{ms.get('filename', '')}（對照規則 {len(ms.get('rules') or [])} 條）")
+    # MyCoach：店長在 LINE 輸入驗證碼後，本機存著該門市的登入 cookie（撐不過一天，過期就留空）
+    mc_session = mycoach_client.load_shop_session(shop_id)
+    if mc_session is not None and not mycoach_client.session_valid(mc_session):
+        mc_session = None
+    if mc_session is not None:
+        log("  使用門市的 MyCoach 登入")
     with shoppertrak_traffic.credentials_override(t.get("username"), t.get("password")), \
-            mysetup.aliases_override(ms.get("rules") or []):
+            mysetup.aliases_override(ms.get("rules") or []), \
+            (mycoach_client.session_override(mc_session) if mc_session is not None else nullcontext()):
         filename, body, meta = server.build_report_excel(payload, log=lambda m: log(f"  {m}"))
     ms_result = meta["sourceMeta"].get("mysetup") if ms.get("data") else None
     notice = ""
@@ -199,6 +209,9 @@ def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, t
         names = "、".join(f"{u['name']}（{u['count']} 筆）" for u in ms_result["unmatched"])
         notice = (f"\nMySetup 有名字對不上員工：{names}。這些筆數暫時列在第 13/14 頁加總列上方，"
                   "請到 LINE「我的帳戶」的 MySetup 名稱對照指定員工，下次產出會自動套用。\n")
+    if mycoach_set and not meta["sourceMeta"].get("mycoach"):
+        notice += ("\nMyCoach 這次沒有登入（或登入已過期），第 13/14 頁充值數留空。"
+                   "下次產出前請在 LINE「產出週報」頁先輸入驗證碼登入。\n")
     span = f"{wk_start:%m/%d}–{wk_end:%m/%d}"
     send_mail(cfg, to, f"【週報】{shop_name} {span}",
               f"{manager_name or '店長'} 你好：\n\n附件是 {shop_name} {wk_start:%Y/%m/%d}（日）到 {wk_end:%Y/%m/%d}（六）的週報。\n"
@@ -238,6 +251,43 @@ def process_traffic_verify(cfg):
         log(f"門市 {item['shop_id']} 人流帳號驗證失敗：{e}")
 
 
+def process_mycoach(cfg):
+    """店長在 LINE 要 MyCoach 驗證碼／送出驗證碼：每輪處理一件。驗證碼綁在這台 Mac 的連線上，cookie 以門市存檔。"""
+    try:
+        item = worker(cfg, "GET", "/api/mac/mycoach/next")["item"]
+    except urllib.error.HTTPError as e:
+        if e.code == 404:   # Worker 還沒部署 MyCoach 功能：略過，不影響產報
+            return
+        raise
+    if not item:
+        return
+    import mycoach_client
+    shop = item["shop_id"]
+    result = {"shop_id": shop}
+    try:
+        if item["action"] == "captcha":
+            s = mycoach_client.new_session()
+            img, ctype = mycoach_client.fetch_captcha(s)
+            mycoach_client.save_shop_session(shop, s, logged_in=False)
+            result.update(state="need_captcha", captcha=base64.b64encode(img).decode(), contentType=ctype)
+            log(f"門市 {shop} MyCoach 驗證碼已取得")
+        else:
+            s = mycoach_client.load_shop_session(shop, require_login=False)
+            if s is None:
+                raise mycoach_client.LoginError("驗證碼已失效")
+            mycoach_client.login(s, item["username"], item["password"], item.get("code"))
+            mycoach_client.save_shop_session(shop, s, logged_in=True)
+            result["state"] = "logged_in"
+            log(f"門市 {shop} MyCoach 登入成功")
+    except mycoach_client.LoginError as e:
+        result.update(state="failed", error=f"登入失敗：{e}")
+        log(f"門市 {shop} MyCoach 登入失敗：{e}")
+    except Exception as e:
+        result.update(state="failed", error="MyCoach 暫時無法連線")
+        log(f"門市 {shop} MyCoach 處理失敗：{e}")
+    worker(cfg, "POST", "/api/mac/mycoach/result", result)
+
+
 def process_jobs(cfg):
     if not epb_reachable():
         log("EPB 連不上（VPN／內網？），本輪不領產報工作")
@@ -250,7 +300,7 @@ def process_jobs(cfg):
         try:
             ms_result = build_and_send(cfg, job["shop_id"], job["shop_name"], job["week_end"], job.get("yoy_end"),
                                        job.get("employee_count"), job["to_email"], job.get("manager_name", ""),
-                                       job.get("traffic"), job.get("mysetup"))
+                                       job.get("traffic"), job.get("mysetup"), job.get("mycoach_set"))
             result = {"id": job["id"], "ok": True, "version": app_version()}
             if ms_result is not None:
                 result["mysetup"] = ms_result
@@ -276,6 +326,7 @@ def main():
     try:
         process_outbox(cfg)
         process_traffic_verify(cfg)
+        process_mycoach(cfg)
         process_jobs(cfg)
         # launchd 每 60 秒才啟動一次；這輪剩下的時間每 12 秒再看一次驗證碼信與待測人流帳號，
         # 讓店長按「測試登入」或等驗證碼時不用等滿一分鐘
@@ -283,6 +334,7 @@ def main():
             time.sleep(QUICK_INTERVAL_SEC)
             process_outbox(cfg)
             process_traffic_verify(cfg)
+            process_mycoach(cfg)
     except urllib.error.URLError as e:
         log(f"Worker 連線失敗：{e}")
 

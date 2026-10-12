@@ -35,6 +35,7 @@ except Exception as _exc:  # 缺套件等情況下仍讓 server 正常啟動
     traffic_mod = None
     _TRAFFIC_IMPORT_ERROR = str(_exc)
 
+import mycoach_client
 import mysetup
 
 try:
@@ -530,6 +531,29 @@ def _sheet_device_total(ws, row):
     return sum(ws.cell(row=row, column=c).value or 0 for c in MYSETUP_DEVICE_COLS)
 
 
+def _code_label(code, emp_names):
+    """不在報表員工列的員工代碼，補列時顯示「代碼 姓名」（查不到姓名只顯示代碼）。"""
+    name = (emp_names.get(code) or ("", ""))[0]
+    return f"{code} {name}" if name else code
+
+
+def _sheet_rows(ws, employees, extra_labels):
+    """第 13/14 頁：員工列從第 3 列起，加總列在最後。extra_labels 是要補在加總列上方的列（MySetup、MyCoach 共用，
+    已補過的同名列沿用）。回傳 ({code: row}, {label: row}, total_row)。"""
+    total_row = next(r for r in range(3, ws.max_row + 1) if text(ws.cell(row=r, column=1).value) == "加總")
+    first_extra = 3 + len(employees)
+    existing = {text(ws.cell(row=r, column=1).value): r for r in range(first_extra, total_row)}
+    missing = [label for label in dict.fromkeys(extra_labels) if label not in existing]
+    if missing:
+        ws.insert_rows(total_row, len(missing))
+        for i, label in enumerate(missing):
+            copy_row_style(ws, 3, total_row + i, ws.max_column)
+            ws.cell(row=total_row + i, column=1).value = label
+            existing[label] = total_row + i
+        total_row += len(missing)
+    return {code: 3 + i for i, (code, _) in enumerate(employees)}, existing, total_row
+
+
 def fill_mysetup_sheets(wb, shop_id, records, employees, dates, log=lambda m: None):
     """第 13/14 頁 W/X 欄：依 Submission Time 切本週／本月，對應到員工列；對不上的名字補列在加總列上方。"""
     names = [r["name"] for r in records]
@@ -544,32 +568,24 @@ def fill_mysetup_sheets(wb, shop_id, records, employees, dates, log=lambda m: No
         by_how[how] = by_how.get(how, 0) + 1
     log("  名字對應：" + "、".join(f"{k} {v} 人" for k, v in by_how.items()))
 
-    row_of = {code: i for i, (code, _) in enumerate(employees)}
-    display_of = dict(employees)
+    in_report = {code for code, _ in employees}
     all_unmatched = {}
     for sheet_name, start_key, end_key in MYSETUP_SHEETS:
         ws = wb[sheet_name]
         counts, unmatched, skipped = mysetup.summarize(records, mapping, dates[start_key], dates[end_key])
         for name, n in unmatched.items():   # 週跨月時本週可能有本月沒有的名字，兩頁取聯集（取較大筆數）
             all_unmatched[name] = max(all_unmatched.get(name, 0), n)
-        total_row = next(r for r in range(3, ws.max_row + 1) if text(ws.cell(row=r, column=1).value) == "加總")
         # 不在報表員工列的：人工指定到本月沒交易的員工、或還沒對上的原始名字 → 補列在加總列上方
-        extra = [(display_of.get(code, code), n) for code, n in counts.items() if code not in row_of]
+        extra = [(_code_label(code, emp_names), n) for code, n in counts.items() if code not in in_report]
         extra += [(f"{name}（未對上）", n) for name, n in unmatched.items()]
-        if extra:
-            ws.insert_rows(total_row, len(extra))
-            for i in range(len(extra)):
-                copy_row_style(ws, 3, total_row + i, ws.max_column)
-            total_row += len(extra)
-        for code, idx in row_of.items():
+        row_of, extra_row, total_row = _sheet_rows(ws, employees, [label for label, _ in extra])
+        for code, row in row_of.items():
             n = counts.get(code, 0)
-            ws.cell(row=3 + idx, column=MYSETUP_COUNT_COL).value = n or None
-            ws.cell(row=3 + idx, column=MYSETUP_RATE_COL).value = (
-                engine.safe_rate(n, _sheet_device_total(ws, 3 + idx)) if n else None)
-        for i, (label, n) in enumerate(extra):
-            row = total_row - len(extra) + i
-            ws.cell(row=row, column=1).value = label
-            ws.cell(row=row, column=MYSETUP_COUNT_COL).value = n
+            ws.cell(row=row, column=MYSETUP_COUNT_COL).value = n or None
+            ws.cell(row=row, column=MYSETUP_RATE_COL).value = (
+                engine.safe_rate(n, _sheet_device_total(ws, row)) if n else None)
+        for label, n in extra:
+            ws.cell(row=extra_row[label], column=MYSETUP_COUNT_COL).value = n
         total = sum(ws.cell(row=r, column=MYSETUP_COUNT_COL).value or 0 for r in range(3, total_row))
         ws.cell(row=total_row, column=MYSETUP_COUNT_COL).value = total or None
         ws.cell(row=total_row, column=MYSETUP_RATE_COL).value = (
@@ -584,6 +600,46 @@ def fill_mysetup_sheets(wb, shop_id, records, employees, dates, log=lambda m: No
     employees_out = [{"code": code, "name": emp_names.get(code, ("", ""))[0], "nameLang": emp_names.get(code, ("", ""))[1]}
                      for code, _ in employees]
     return all_unmatched, employees_out
+
+
+MYCOACH_DUE_COL, MYCOACH_ACTUAL_COL, MYCOACH_RATE_COL = 26, 27, 28   # Z 應充值數、AA 實際充值數、AB 儲值率
+
+
+def _mycoach_due(ws, row):
+    """MyCoach 應充值數（課時）：Mac 每台 4 節、iPhone／iPad／Watch 每台 2 節（同 MyCoach 儲值詳情的贈送規則）。"""
+    v = lambda c: ws.cell(row=row, column=c).value or 0
+    return v(2) * 4 + (v(6) + v(10) + v(15)) * 2
+
+
+def fill_mycoach_sheets(wb, rows, employees, dates, log=lambda m: None):
+    """第 13/14 頁 Z/AA/AB：充值紀錄「操作人」就是員工代碼，依儲值時間切本週／本月加總課時數。"""
+    in_report = {code for code, _ in employees}
+    others = {r["operator"] for r in rows if r["operator"] and r["operator"] not in in_report}
+    try:
+        emp_names = epb_emp_names(others) if others else {}
+    except Exception:  # 查不到姓名只顯示代碼
+        emp_names = {}
+    for sheet_name, start_key, end_key in MYSETUP_SHEETS:
+        ws = wb[sheet_name]
+        hours = mycoach_client.hours_by_operator(rows, dates[start_key], dates[end_key])
+        extra = [(_code_label(code, emp_names), n) for code, n in hours.items() if code not in in_report]
+        row_of, extra_row, total_row = _sheet_rows(ws, employees, [label for label, _ in extra])
+        for code, row in row_of.items():
+            due, actual = _mycoach_due(ws, row), hours.get(code, 0)
+            ws.cell(row=row, column=MYCOACH_DUE_COL).value = due or None
+            ws.cell(row=row, column=MYCOACH_ACTUAL_COL).value = actual or None
+            ws.cell(row=row, column=MYCOACH_RATE_COL).value = engine.safe_rate(actual, due) if due else None
+        for label, n in extra:
+            ws.cell(row=extra_row[label], column=MYCOACH_ACTUAL_COL).value = n
+        tot = lambda c: sum(ws.cell(row=r, column=c).value or 0 for r in range(3, total_row))
+        due, actual = tot(MYCOACH_DUE_COL), tot(MYCOACH_ACTUAL_COL)
+        ws.cell(row=total_row, column=MYCOACH_DUE_COL).value = due or None
+        ws.cell(row=total_row, column=MYCOACH_ACTUAL_COL).value = actual or None
+        ws.cell(row=total_row, column=MYCOACH_RATE_COL).value = engine.safe_rate(actual, due) if due else None
+        msg = f"  {sheet_name}：MyCoach 應充值 {due}、實際充值 {actual}"
+        if extra:
+            msg += "；不在員工列：" + "、".join(f"{k}（{v}）" for k, v in extra)
+        log(msg)
 
 
 def load_sacare_cached():
@@ -1622,6 +1678,19 @@ def build_report_workbook(payload, log=lambda m: None):
             "employees": ms_employees,   # 週報小幫手設定對照時的下拉選項
         }
 
+    mc_session = mycoach_client.current_session()
+    if mc_session is None:
+        log("MyCoach 未登入，第 13/14 頁充值數留空")
+    else:
+        log("查詢 MyCoach 充值紀錄…")
+        try:
+            mc_rows = mycoach_client.fetch_recharge(mc_session, min(dates["wk_start"], dates["mo_start"]),
+                                                    max(dates["wk_end"], dates["mo_end"]))
+            fill_mycoach_sheets(wb, mc_rows, employees, dates, log=log)
+            source_meta["mycoach"] = True
+        except Exception as exc:  # 登入過期等：充值數留空，報表照常
+            log(f"  ⚠ MyCoach 充值紀錄查詢失敗，充值數留空：{exc}")
+
     source_meta["employeeCount"] = len(employees)
     source_meta["employees"] = [{"code": code, "name": name} for code, name in employees]
 
@@ -1723,9 +1792,10 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def send_png(self, body):
+    def send_png(self, body, content_type="image/png"):
         self.send_response(200)
-        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1821,6 +1891,16 @@ class Handler(SimpleHTTPRequestHandler):
                 emp = traffic_mod.get_employee_count(shop_id) if traffic_mod else None
                 has_site = bool(traffic_mod and traffic_mod.site_id_for_shop(shop_id))
                 self.send_json(200, {"employeeCount": emp, "hasSiteId": has_site})
+                return
+            if p.path == "/api/mycoach/status":
+                self.send_json(200, mycoach_client.status(probe=qs.get("probe", ["0"])[0] == "1"))
+                return
+            if p.path == "/api/mycoach/captcha":
+                img, ctype = mycoach_client.get_captcha()
+                if not img:
+                    self.send_json(404, {"error": "目前沒有驗證碼，請先按「取得驗證碼」"})
+                    return
+                self.send_png(img, ctype)
                 return
             if p.path == "/api/mysetup/aliases":
                 shop_id = safe_shop_id(qs.get("shopId", [""])[0] or DEFAULT_SHOP_ID)
@@ -1941,6 +2021,32 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if p.path == "/api/dss/login/otp":
                 self.send_json(200, dss_mod.submit_otp(str(body.get("code", ""))))
+                return
+            self.send_json(404, {"error": "Not found"})
+            return
+        if p.path.startswith("/api/mycoach/"):
+            try:
+                body = self.read_body()
+            except Exception as e:
+                self.send_json(400, {"error": f"參數錯誤: {e}"})
+                return
+            if p.path == "/api/mycoach/credentials":
+                if body.get("clear"):
+                    mycoach_client.clear_credentials()
+                    self.send_json(200, mycoach_client.status())
+                    return
+                username, password = str(body.get("username", "")).strip(), str(body.get("password", ""))
+                if not username or not password:
+                    self.send_json(400, {"error": "請輸入帳號與密碼"})
+                    return
+                mycoach_client.set_credentials(username, password)
+                self.send_json(200, mycoach_client.status())
+                return
+            if p.path == "/api/mycoach/login/start":
+                self.send_json(200, mycoach_client.start_login())
+                return
+            if p.path == "/api/mycoach/login/code":
+                self.send_json(200, mycoach_client.submit_code(str(body.get("code", ""))))
                 return
             self.send_json(404, {"error": "Not found"})
             return

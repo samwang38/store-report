@@ -93,6 +93,38 @@
         </div>
       </section>
 
+      <section class="card" id="mycoachCard" style="--i:1">
+        <h2 class="card-title">MyCoach 登入<span class="card-tag">充值數</span><span class="status-pill" id="mcBadge">…</span></h2>
+        <p class="card-desc">第 13/14 頁的 MyCoach 應充值數、實際充值數、儲值率。登入撐不過一天，每次產報前請先輸入驗證碼登入；沒登入則這三欄留空。</p>
+        <div class="group">
+          <div class="row">
+            <label class="row-label" for="mcUser">帳號</label>
+            <div class="row-control"><input type="text" id="mcUser" autocomplete="off" placeholder="MyCoach 帳號"></div>
+          </div>
+          <div class="row">
+            <label class="row-label" for="mcPass">密碼</label>
+            <div class="row-control"><input type="password" id="mcPass" autocomplete="new-password" placeholder="MyCoach 密碼"></div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="ghost-btn" id="mcSaveBtn" type="button">儲存帳密</button>
+          <button class="primary-btn" id="mcStartBtn" type="button">取得驗證碼</button>
+        </div>
+        <div class="group" id="mcCaptchaGroup" hidden>
+          <div class="row">
+            <img id="mcCaptchaImg" alt="驗證碼" class="captcha-img">
+            <button class="ghost-btn" id="mcRefreshBtn" type="button">換一張</button>
+            <div class="row-control">
+              <input type="text" id="mcCode" maxlength="8" placeholder="輸入驗證碼" autocomplete="off">
+            </div>
+          </div>
+        </div>
+        <div class="actions" id="mcLoginActions" hidden>
+          <button class="primary-btn" id="mcLoginBtn" type="button">登入</button>
+        </div>
+        <p class="footnote" id="mcStatus"></p>
+      </section>
+
       <section class="card" id="shoppertrakCard" style="--i:1">
         <details class="card-collapse">
         <summary>

@@ -11,3 +11,4 @@ dss_login_debug.html
 local_config.backup-*.json
 .last_update_check
 .update_blocked_notified
+.mycoach_sessions.json

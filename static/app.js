@@ -143,6 +143,7 @@
     shoppertrakCard.hidden = (card !== configCard);
     dssCard.hidden = (card !== configCard);
     mysetupCard.hidden = (card !== configCard);
+    mycoachCard.hidden = (card !== configCard);
   }
 
   function setBadge(el, text, cls) {
@@ -588,6 +589,73 @@
     });
   }
 
+
+  // ─── MyCoach 登入（充值數）：每次產報前輸入驗證碼登入 ─────────────────
+  const mycoachCard = $('mycoachCard');
+  const mcBadge = $('mcBadge'), mcUser = $('mcUser'), mcPass = $('mcPass'), mcStatus = $('mcStatus');
+  const mcCaptchaGroup = $('mcCaptchaGroup'), mcCaptchaImg = $('mcCaptchaImg'), mcCode = $('mcCode');
+  const mcLoginActions = $('mcLoginActions'), mcStartBtn = $('mcStartBtn'), mcLoginBtn = $('mcLoginBtn');
+  let mcState = null;
+
+  function renderMycoach(data) {
+    mcState = data;
+    if (data.username && !mcUser.value) mcUser.value = data.username;
+    if (data.hasCredentials) mcPass.placeholder = '已儲存（要更改再輸入）';
+    const need = data.state === 'need_captcha';
+    mcCaptchaGroup.hidden = mcLoginActions.hidden = !need;
+    if (need) { mcCaptchaImg.src = '/api/mycoach/captcha?t=' + Date.now(); }
+    if (data.state === 'logged_in') {
+      const t = data.loggedInAt ? data.loggedInAt.slice(11, 16) : '';
+      setBadge(mcBadge, '✓ 已登入 ' + t, 'ok');
+      mcStatus.textContent = '已登入，這次產報會帶入充值數。';
+      mcStartBtn.textContent = '重新登入';
+    } else {
+      setBadge(mcBadge, data.hasCredentials ? '未登入' : '未設定帳密', 'warn');
+      mcStatus.textContent = data.error || (need ? '請輸入圖中的驗證碼後按「登入」。' : (data.hasCredentials ? '按「取得驗證碼」開始登入。' : '請先輸入帳號密碼並儲存。'));
+      mcStartBtn.textContent = '取得驗證碼';
+    }
+  }
+
+  async function mcCall(path, body) {
+    const res = await fetch(path, body === undefined ? undefined : {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '操作失敗');
+    renderMycoach(data);
+    return data;
+  }
+
+  async function loadMycoach(probe) {
+    try { await mcCall('/api/mycoach/status' + (probe ? '?probe=1' : '')); }
+    catch (e) { setBadge(mcBadge, '—', ''); }
+  }
+
+  $('mcSaveBtn').addEventListener('click', async () => {
+    const username = mcUser.value.trim(), password = mcPass.value;
+    if (!username || !password) { mcStatus.textContent = '請輸入帳號與密碼'; return; }
+    try { await mcCall('/api/mycoach/credentials', { username, password }); mcPass.value = ''; mcStatus.textContent = '已儲存帳密，按「取得驗證碼」登入。'; }
+    catch (e) { mcStatus.textContent = e.message; }
+  });
+  mcStartBtn.addEventListener('click', async () => {
+    mcStartBtn.disabled = true; mcStatus.textContent = '取得驗證碼中…';
+    try {
+      // 有輸入新密碼就先存，再開始登入
+      if (mcUser.value.trim() && mcPass.value) { await mcCall('/api/mycoach/credentials', { username: mcUser.value.trim(), password: mcPass.value }); mcPass.value = ''; }
+      await mcCall('/api/mycoach/login/start', {});
+      mcCode.value = ''; mcCode.focus();
+    } catch (e) { mcStatus.textContent = e.message; } finally { mcStartBtn.disabled = false; }
+  });
+  $('mcRefreshBtn').addEventListener('click', () => mcCall('/api/mycoach/login/start', {}).catch(e => { mcStatus.textContent = e.message; }));
+  async function mcSubmit() {
+    const code = mcCode.value.trim();
+    if (!code) { mcStatus.textContent = '請輸入驗證碼'; return; }
+    mcLoginBtn.disabled = true; mcStatus.textContent = '登入中…';
+    try { await mcCall('/api/mycoach/login/code', { code }); mcCode.value = ''; }
+    catch (e) { mcStatus.textContent = e.message; } finally { mcLoginBtn.disabled = false; }
+  }
+  mcLoginBtn.addEventListener('click', mcSubmit);
+  mcCode.addEventListener('keydown', e => { if (e.key === 'Enter') mcSubmit(); });
+
   async function pollStatus() {
     if (!currentJobId) return;
     try {
@@ -654,6 +722,15 @@
       }
     } catch (e) { /* 狀態查詢失敗不擋產生 */ }
 
+    // MyCoach 登入撐不過一天：產報前確認還登入著，沒登入就提醒充值數會留空
+    await loadMycoach(true);
+    if (!mcState || mcState.state !== 'logged_in') {
+      if (!confirm('MyCoach 尚未登入（或登入已過期），第 13/14 頁的充值數會留空。\n確定要直接產生嗎？')) {
+        mycoachCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+    }
+
     logBox.innerHTML = '';
     downloadLogBox.innerHTML = '';
     downloadLogBox.hidden = true;
@@ -719,4 +796,5 @@
   loadDefaultDate();
   loadShoppertrakStatus();
   loadDssStatus();
+  loadMycoach(false);
 })();
