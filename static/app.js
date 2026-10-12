@@ -590,6 +590,9 @@
   }
 
 
+  // 網頁檔已更新、但背景伺服器還是更新前那個：新功能的 API 會回 404
+  const STALE_SERVER_MSG = '伺服器還是舊版：請關閉「門市報表製作」的終端機視窗，再重新雙擊啟動檔。';
+
   // ─── MyCoach 登入（充值數）：每次產報前輸入驗證碼登入 ─────────────────
   const mycoachCard = $('mycoachCard');
   const mcBadge = $('mcBadge'), mcUser = $('mcUser'), mcPass = $('mcPass'), mcStatus = $('mcStatus');
@@ -620,6 +623,7 @@
     const res = await fetch(path, body === undefined ? undefined : {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const data = await res.json();
+    if (res.status === 404) throw new Error(STALE_SERVER_MSG);
     if (!res.ok) throw new Error(data.error || '操作失敗');
     renderMycoach(data);
     return data;
@@ -627,7 +631,7 @@
 
   async function loadMycoach(probe) {
     try { await mcCall('/api/mycoach/status' + (probe ? '?probe=1' : '')); }
-    catch (e) { setBadge(mcBadge, '—', ''); }
+    catch (e) { setBadge(mcBadge, '—', ''); mcStatus.textContent = e.message; }
   }
 
   $('mcSaveBtn').addEventListener('click', async () => {

@@ -127,12 +127,20 @@ if [ "$PLAYWRIGHT_BROWSER_OK" != "1" ]; then
   fi
 fi
 
-# ── 已有伺服器在跑（例如重複點兩下）→ 直接開瀏覽器，不重複啟動 ──
+# ── 已有伺服器在跑（例如重複點兩下）→ 同版本就直接開瀏覽器；舊版（剛更新過）就關掉舊的重新啟動 ──
 if curl -s -o /dev/null --max-time 1 "$URL"; then
-  echo "偵測到伺服器已在執行中，直接開啟瀏覽器。"
-  open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL"
-  read -p "按 Enter 關閉此視窗"
-  exit 0
+  RUNNING_VER=$(curl -s --max-time 2 "${URL}api/version" | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p')
+  DISK_VER=$(tr -d '[:space:]' < VERSION 2>/dev/null)
+  if [ -n "$RUNNING_VER" ] && [ "$RUNNING_VER" = "$DISK_VER" ]; then
+    echo "偵測到伺服器已在執行中，直接開啟瀏覽器。"
+    open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL"
+    read -p "按 Enter 關閉此視窗"
+    exit 0
+  fi
+  echo "執行中的伺服器是舊版（${RUNNING_VER:-更新前的版本}），關閉後以 v$DISK_VER 重新啟動…"
+  OLD_PIDS=$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)
+  [ -n "$OLD_PIDS" ] && kill $OLD_PIDS 2>/dev/null
+  for i in $(seq 1 10); do curl -s -o /dev/null --max-time 1 "$URL" || break; sleep 1; done
 fi
 
 echo "啟動伺服器（port $PORT）…"

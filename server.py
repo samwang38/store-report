@@ -46,6 +46,10 @@ except Exception as _exc:
 
 
 ROOT = Path(__file__).resolve().parent
+try:  # 啟動當下的版本；啟動檔用 /api/version 判斷執行中的伺服器是不是舊版
+    APP_VERSION = (ROOT / "VERSION").read_text("utf-8").strip()
+except OSError:
+    APP_VERSION = ""
 STATIC_ROOT = ROOT / "static"
 TEMPLATE_PATH = ROOT / "週報模板.xlsx"
 DATA_DIR = ROOT / "銷售資料"
@@ -1808,6 +1812,9 @@ class Handler(SimpleHTTPRequestHandler):
         p = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(p.query)
         try:
+            if p.path == "/api/version":
+                self.send_json(200, {"version": APP_VERSION})
+                return
             if p.path == "/api/default-date":
                 self.send_json(200, {"date": last_saturday().isoformat()})
                 return
