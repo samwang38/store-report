@@ -598,6 +598,25 @@ def _sheet_rows(ws, employees, extra_labels):
     return {code: 3 + i for i, (code, _) in enumerate(employees)}, existing, total_row
 
 
+def _mysetup_detail_rows(ws, records, mapping, start, end, employees, row_of, total_row, emp_names):
+    """分析頁「MySetup 提交細項」一期的列：各機種台數讀第 13/14 頁同一列（Mac／iPad／iPhone／Watch），
+    提交數依 Device 欄拆；不在報表的員工與對不上的名字台數留空。"""
+    devices = engine.MYSETUP_DETAIL_DEVICES
+    units_at = lambda r: {d: ws.cell(row=r, column=c).value or 0 for d, c in zip(devices, MYSETUP_DEVICE_COLS)}
+    counts, unmatched = mysetup.summarize_by_device(records, mapping, start, end)
+    rows = [{"label": text(ws.cell(row=row_of[code], column=1).value) or code, "units": units_at(row_of[code]),
+             "subs": counts.get(code, {})} for code, _ in employees]
+    rows += [{"label": _code_label(code, emp_names), "units": {}, "subs": subs}
+             for code, subs in counts.items() if code not in row_of]
+    rows += [{"label": f"{name}（未對上）", "units": {}, "subs": subs} for name, subs in unmatched.items()]
+    total_subs = {}
+    for r in rows:
+        for d, n in r["subs"].items():
+            total_subs[d] = total_subs.get(d, 0) + n
+    rows.append({"label": "門市合計", "units": units_at(total_row), "subs": total_subs, "total": True})
+    return rows
+
+
 def fill_mysetup_sheets(wb, shop_id, records, employees, dates, log=lambda m: None):
     """第 13/14 頁 W/X 欄：依 Submission Time 切本週／本月，對應到員工列；對不上的名字補列在加總列上方。"""
     names = [r["name"] for r in records]
@@ -614,6 +633,7 @@ def fill_mysetup_sheets(wb, shop_id, records, employees, dates, log=lambda m: No
 
     in_report = {code for code, _ in employees}
     all_unmatched = {}
+    detail_blocks = []
     for sheet_name, start_key, end_key in MYSETUP_SHEETS:
         ws = wb[sheet_name]
         counts, unmatched, skipped = mysetup.summarize(records, mapping, dates[start_key], dates[end_key])
@@ -634,12 +654,17 @@ def fill_mysetup_sheets(wb, shop_id, records, employees, dates, log=lambda m: No
         ws.cell(row=total_row, column=MYSETUP_COUNT_COL).value = total or None
         ws.cell(row=total_row, column=MYSETUP_RATE_COL).value = (
             engine.safe_rate(total, _sheet_device_total(ws, total_row)) if total else None)
+        detail_blocks.append((("本週" if start_key == "wk_start" else "本月")
+                              + f" {dates[start_key]:%m/%d}~{dates[end_key]:%m/%d}",
+                              _mysetup_detail_rows(ws, records, mapping, dates[start_key], dates[end_key],
+                                                   employees, row_of, total_row, emp_names)))
         msg = f"  {sheet_name}：MySetup {total} 筆"
         if unmatched:
             msg += "；⚠ 未對上：" + "、".join(f"{k}（{v} 筆）" for k, v in unmatched.items())
         if skipped:
             msg += "；不計入：" + "、".join(f"{k}（{v} 筆）" for k, v in skipped.items())
         log(msg)
+    engine.fill_sheet_mysetup_detail(wb, detail_blocks)
     mysetup.save_unmatched(shop_id, all_unmatched, dates["mo_end"].isoformat())
     employees_out = [{"code": code, "name": emp_names.get(code, ("", ""))[0], "nameLang": emp_names.get(code, ("", ""))[1]}
                      for code, _ in employees]
@@ -1737,7 +1762,9 @@ def build_report_workbook(payload, log=lambda m: None):
     engine.fill_sheet_emp_trend(wb, df_cur, sacare_prices, dates,
                                 bundle_weeks=bundle["weeks8"] if bundle else None, fiscal_start=fiscal_start)
 
-    if mysetup_records is not None:
+    if mysetup_records is None:
+        engine.fill_sheet_mysetup_detail(wb, None)   # 分析頁固定存在，沒有匯出檔時寫「無資料」
+    else:
         log("填入 13-14 MySetup 提交數量…")
         unmatched, ms_employees = fill_mysetup_sheets(wb, shop_id, mysetup_records, employees, dates, log=log)
         source_meta["mysetupUnmatched"] = len(unmatched)

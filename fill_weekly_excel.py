@@ -2145,8 +2145,9 @@ EMP_AOV_SHEET     = '個人客單價'
 EMP_WARRANTY_SHEET = '個人保固搭售率'
 EMP_MIX_SHEET     = '個人業績組成'
 EMP_TREND_SHEET   = '個人近8週走勢'
+MYSETUP_DETAIL_SHEET = 'MySetup 提交細項'
 ANALYSIS_SHEETS = [DETAIL_SHEET_PRODUCTS, TPP_DETAIL_SHEET, DETAIL_SHEET_OPS, HOT_SERIES_SHEET, PROMO_SHEET, LAUNCH_SHEET,
-                   EMP_AOV_SHEET, EMP_WARRANTY_SHEET, EMP_MIX_SHEET, EMP_TREND_SHEET]
+                   EMP_AOV_SHEET, EMP_WARRANTY_SHEET, EMP_MIX_SHEET, EMP_TREND_SHEET, MYSETUP_DETAIL_SHEET]
 
 # 分析用主機品類（台數口徑同 _device_stats：C3 或認證機品牌，退貨扣回）
 ANALYSIS_LINES = [
@@ -2591,6 +2592,66 @@ def fill_sheet_emp_trend(wb, df_cur, sacare_prices, dates: dict, bundle_weeks=No
                                             '保固搭售率＝(AppleCare＋SA Care) 套數÷主機台數（同個人保固搭售率頁）；'
                                             '3PP 平均單價＝3PP 金額÷件數（不含贈品／訂金／尾款）。最右欄＝本週減 8 週平均。')
     ws.cell(row=row + 1, column=1).font = st['font']
+
+
+# ── MySetup 提交細項 ──
+MYSETUP_DETAIL_DEVICES = ('Mac', 'iPad', 'iPhone', 'Watch')
+
+
+def fill_sheet_mysetup_detail(wb, blocks=None):
+    """blocks：[(期間標題, rows)…]；row＝{label, units: {機種: 台數 或 None}, subs: {機種: 筆數}, total}，
+    最後一列為門市合計。blocks 為 None＝本次沒有 Personal Setup 匯出檔。"""
+    print(f'  分析頁：{MYSETUP_DETAIL_SHEET}', flush=True)
+    ws = _reset_detail_sheet(wb, MYSETUP_DETAIL_SHEET, freeze='B1')
+    ws.column_dimensions['A'].width = 24
+    for c in range(2, 17):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 9
+    st = _detail_styles()
+    if not blocks:
+        ws.cell(row=1, column=1).value = '本次未提供 Personal Setup 匯出檔，沒有 MySetup 資料。'
+        ws.cell(row=1, column=1).font = st['bold']
+        return
+    groups = list(MYSETUP_DETAIL_DEVICES) + ['合計']
+    st['groups'] = tuple(2 + 3 * i for i in range(len(groups)))
+
+    def split(r):
+        """每組 (台數, 提交, 提交率)；台數未知（對不上的名字）時台數與提交率留空。"""
+        out = []
+        for g in groups:
+            if g == '合計':
+                known = [r['units'].get(d) for d in MYSETUP_DETAIL_DEVICES]
+                u = sum(x for x in known if x) if any(x is not None for x in known) else None
+                n = sum(r['subs'].values())
+            else:
+                u, n = r['units'].get(g), r['subs'].get(g, 0)
+            out.append((u, n, safe_rate(n, u) if u else None))
+        return out
+
+    row = 1
+    for title, rows in blocks:
+        row = _title_row(ws, row, f'{title}（提交率＝MySetup 提交數÷主機台數，台數同週報第 13、14 頁；綠＝高於門市、紅＝低於門市）',
+                         1 + 3 * len(groups), st)
+        _head_cells(ws, row, 1, ['同仁'], st)
+        for i, g in enumerate(groups):
+            ws.merge_cells(start_row=row, start_column=2 + i * 3, end_row=row, end_column=4 + i * 3)
+            _head_cells(ws, row, 2 + i * 3, [g, '', ''], st)
+        row += 1
+        _head_cells(ws, row, 1, [''], st)
+        for i in range(len(groups)):
+            _head_cells(ws, row, 2 + i * 3, ['台數', '提交', '提交率'], st, fill=st['group_fills'][i % 3])
+        row += 1
+        store = split(rows[-1])
+        for r in rows:
+            vals, fmts, colors = [], [], []
+            for i, (u, n, rate) in enumerate(split(r)):
+                vals += [u, n or None, rate]
+                fmts += ['#,##0', '#,##0', '0%']
+                colors += [None, None, None if r.get('total') else _vs_color(rate, store[i][2])]
+            row = _value_row(ws, row, r['label'], vals, fmts, st, bold=bool(r.get('total')), colors=colors)
+        row += 1
+    ws.cell(row=row, column=1).value = ('提交數依 Personal Setup 的 Submission Time 與 Device 欄分週／月、分機種；'
+                                        '名字對應同週報第 13、14 頁（含人工對照），對不上的名字列在合計上方。')
+    ws.cell(row=row, column=1).font = st['font']
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────

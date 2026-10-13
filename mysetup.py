@@ -159,6 +159,44 @@ def summarize(records, mapping, start, end):
 
 
 # ─── 設定檔（local_config.json）──────────────────────────────────────────
+MYSETUP_DEVICES = ("Mac", "iPad", "iPhone", "Watch")
+
+
+def device_key(device):
+    """Device 欄（或分頁名）正規化成 Mac／iPad／iPhone／Watch；其他回 None。"""
+    d = str(device or "").strip().lower()
+    if d.startswith("mac"):
+        return "Mac"
+    if d.startswith("ipad"):
+        return "iPad"
+    if d.startswith("iphone"):
+        return "iPhone"
+    if d.startswith("watch") or d.startswith("apple watch"):
+        return "Watch"
+    return None
+
+
+def summarize_by_device(records, mapping, start, end):
+    """同 summarize，但再依機種拆：回傳 ({員工代碼: {機種: 筆數}}, {未對上顯示名: {機種: 筆數}})；SKIP 不計入。
+    機種不是 Mac／iPad／iPhone／Watch 的記在「其他」。"""
+    counts, unmatched = {}, {}
+    for rec in records:
+        d = rec["submitted"].date()
+        if d < start or d > end:
+            continue
+        dev = device_key(rec.get("device")) or "其他"
+        code, _ = mapping.get(normalize(rec["name"]), (None, ""))
+        if code == SKIP:
+            continue
+        if code:
+            slot = counts.setdefault(code, {})
+        else:
+            label = next((k for k in unmatched if normalize(k) == normalize(rec["name"])), rec["name"])
+            slot = unmatched.setdefault(label, {})
+        slot[dev] = slot.get(dev, 0) + 1
+    return counts, unmatched
+
+
 def _load():
     try:
         return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
