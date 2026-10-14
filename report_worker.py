@@ -170,10 +170,8 @@ def epb_reachable(timeout=3):
         return False
 
 
-def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, to, manager_name="", traffic=None,
-                   mysetup_job=None, mycoach_set=False):
-    """mysetup_job：Worker 帶來的 {filename, data(base64), rules}（店長在 LINE 上傳的 Personal Setup Excel 與名稱對照）。
-    回傳 MySetup 結果 {unmatched, employees} 供回報 Worker；沒帶檔案時回傳 None。"""
+def build_files(shop_id, week_end, yoy_end, employee_count, traffic=None, mysetup_job=None):
+    """產出週報與分析 Excel：回傳 (files, meta)。門市的人流帳號、MySetup、MyCoach 照常帶入。"""
     import mycoach_client
     import mysetup
     import server
@@ -184,7 +182,6 @@ def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, t
                "employeeCount": employee_count}
     if yoy_end:
         payload["yoyEnd"] = yoy_end
-    t0 = time.time()
     t = traffic or {}
     if t.get("username"):
         log("  使用門市自己的人流帳號")
@@ -202,6 +199,36 @@ def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, t
             mysetup.aliases_override(ms.get("rules") or []), \
             (mycoach_client.session_override(mc_session) if mc_session is not None else nullcontext()):
         files, meta = server.build_report_excel(payload, log=lambda m: log(f"  {m}"))
+    return files, meta
+
+
+def upload_analysis(cfg, shop_id, week_end, files, analysis_job_id=None):
+    """把分析 Excel 轉成網頁快照上傳；回傳網頁版分析的連結，失敗回 None（呼叫端改附 Excel）。"""
+    if len(files) < 2:
+        return None
+    try:
+        import analysis_snapshot
+        name, body = files[1]
+        json_gz, xlsx_b64, raw_len = analysis_snapshot.snapshot_payload(body)
+        r = worker(cfg, "POST", "/api/mac/analysis", {
+            "shop_id": shop_id, "week_end": week_end, "json_gz": json_gz, "xlsx": xlsx_b64, "xlsx_name": name,
+            "version": app_version(), "analysis_job_id": analysis_job_id})
+        log(f"  已上傳網頁版分析（{raw_len:,} bytes → 壓縮 {len(json_gz):,}）")
+        return r.get("url")
+    except Exception as e:
+        log(f"  ⚠ 網頁版分析上傳失敗，改附分析 Excel：{e}")
+        return None
+
+
+def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, to, manager_name="", traffic=None,
+                   mysetup_job=None, mycoach_set=False):
+    """mysetup_job：Worker 帶來的 {filename, data(base64), rules}（店長在 LINE 上傳的 Personal Setup Excel 與名稱對照）。
+    回傳 MySetup 結果 {unmatched, employees} 供回報 Worker；沒帶檔案時回傳 None。"""
+    t0 = time.time()
+    wk_end = date.fromisoformat(week_end)
+    wk_start = wk_end - timedelta(days=6)
+    ms = mysetup_job or {}
+    files, meta = build_files(shop_id, week_end, yoy_end, employee_count, traffic, mysetup_job)
     ms_result = meta["sourceMeta"].get("mysetup") if ms.get("data") else None
     notice = ""
     if ms_result and ms_result["unmatched"]:
@@ -212,10 +239,17 @@ def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, t
         notice += ("\nMyCoach 這次沒有登入（或登入已過期），第 13/14 頁充值數留空。"
                    "下次產出前請在 LINE「產出週報」頁先輸入驗證碼登入。\n")
     span = f"{wk_start:%m/%d}–{wk_end:%m/%d}"
+    url = upload_analysis(cfg, shop_id, week_end, files)
+    if url:   # 分析改在網頁上看：信件只附週報 Excel
+        files = files[:1]
+        analysis = f"\n分析報表請在網頁上看（用 LINE 登入，可切換週期、下載 Excel）：\n{url}\n\n"
+        what = "的週報"
+    else:
+        analysis = ""
+        what = "的週報" + ("，以及另附的分析（共 2 個 Excel）" if len(files) > 1 else "")
     send_mail(cfg, to, f"【週報】{shop_name} {span}",
-              f"{manager_name or '店長'} 你好：\n\n附件是 {shop_name} {wk_start:%Y/%m/%d}（日）到 {wk_end:%Y/%m/%d}（六）的週報"
-              f"{'，以及另附的分析（共 2 個 Excel）' if len(files) > 1 else ''}。\n"
-              f"{notice}"
+              f"{manager_name or '店長'} 你好：\n\n附件是 {shop_name} {wk_start:%Y/%m/%d}（日）到 {wk_end:%Y/%m/%d}（六）{what}。\n"
+              f"{analysis}{notice}"
               "數字有疑問，直接在 LINE 告訴 Sam，確認後修正重寄不扣次。\n\n週報小幫手",
               attachments=files)
     log(f"  已寄出 " + "、".join(f"{name}（{len(body):,} bytes）" for name, body in files) + f"，{time.time() - t0:.0f} 秒")
@@ -315,6 +349,27 @@ def process_jobs(cfg):
                        f"已自動退回次數並通知店長。\n\n{tb}")
 
 
+def process_analysis_jobs(cfg):
+    """店長在網頁上要補算的週（不扣次、不寄信）：產出後只上傳網頁版分析。"""
+    try:
+        job = worker(cfg, "POST", "/api/mac/analysis/claim", {})["job"]
+    except urllib.error.HTTPError as e:
+        if e.code == 404:   # Worker 還沒部署網頁版分析：略過
+            return
+        raise
+    if not job:
+        return
+    log(f"領到分析補算 #{job['id']}：{job['shop_id']} {job['shop_name']} 週結束 {job['week_end']}")
+    try:
+        files, _ = build_files(job["shop_id"], job["week_end"], None, job.get("employee_count"),
+                               job.get("traffic"), job.get("mysetup"))
+        if not upload_analysis(cfg, job["shop_id"], job["week_end"], files, analysis_job_id=job["id"]):
+            raise RuntimeError("網頁版分析上傳失敗")
+    except Exception as e:
+        log(f"分析補算 #{job['id']} 失敗：{e}")
+        worker(cfg, "POST", "/api/mac/analysis/fail", {"id": job["id"], "error": f"{type(e).__name__}: {e}"})
+
+
 def main():
     cfg = load_cfg()
     if len(sys.argv) >= 5 and sys.argv[1] == "--local":
@@ -328,6 +383,8 @@ def main():
         process_traffic_verify(cfg)
         process_mycoach(cfg)
         process_jobs(cfg)
+        if epb_reachable():
+            process_analysis_jobs(cfg)
         # launchd 每 60 秒才啟動一次；這輪剩下的時間每 12 秒再看一次驗證碼信與待測人流帳號，
         # 讓店長按「測試登入」或等驗證碼時不用等滿一分鐘
         for _ in range(QUICK_ROUNDS):
