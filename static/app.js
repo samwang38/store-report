@@ -49,6 +49,7 @@
   const downloadBtn   = $('downloadBtn');
   const downloadInfo  = $('downloadInfo');
   const downloadAnalysisBtn = $('downloadAnalysisBtn');
+  const viewAnalysisBtn = $('viewAnalysisBtn');
   const showLogBtn    = $('showLogBtn');
   const downloadLogBox = $('downloadLogBox');
   const resetBtn      = $('resetBtn');
@@ -689,6 +690,8 @@
         downloadAnalysisBtn.onclick = () => {
           window.location.href = `/api/download?jobId=${currentJobId}&part=1`;
         };
+        viewAnalysisBtn.hidden = files.length < 2;
+        viewAnalysisBtn.onclick = () => window.open(`/analysis.html?jobId=${currentJobId}`, '_blank');
         downloadLogBox.hidden = true;
         showLogBtn.textContent = '顯示 log';
         renderDownloadLog();

@@ -2051,6 +2051,30 @@ class Handler(SimpleHTTPRequestHandler):
                     resp["mysetupUnmatched"] = (job.get("meta") or {}).get("sourceMeta", {}).get("mysetupUnmatched")
                 self.send_json(200, resp)
                 return
+            if p.path == "/api/analysis/list":
+                # 網頁版分析：本次執行期間產過的報表（最新在前），供分析頁切換週期
+                with _LOCK:
+                    done = [(k, v) for k, v in JOBS.items() if v["status"] == "done" and len(v.get("files", [])) > 1]
+                items = []
+                for k, v in sorted(done, key=lambda kv: -kv[1].get("created", 0)):
+                    meta = v.get("meta") or {}
+                    per, src = meta.get("periods") or {}, meta.get("sourceMeta") or {}
+                    items.append({"jobId": k, "shopId": src.get("shopId", ""), "wkStart": str(per.get("wk_start", "")),
+                                  "wkEnd": str(per.get("wk_end", "")), "created": v.get("created")})
+                self.send_json(200, {"items": items})
+                return
+            if p.path == "/api/analysis":
+                job_id = qs.get("jobId", [""])[0]
+                with _LOCK:
+                    job = JOBS.get(job_id)
+                if not job or job["status"] != "done" or len(job.get("files", [])) < 2:
+                    self.send_json(404, {"error": "找不到這份分析，請重新產生報表"})
+                    return
+                if "snapshot" not in job:   # 第一次看時才把分析 Excel 轉成網頁資料，之後沿用
+                    import analysis_snapshot
+                    job["snapshot"] = analysis_snapshot.snapshot(openpyxl.load_workbook(BytesIO(job["files"][1][1])))
+                self.send_json(200, {"snapshot": job["snapshot"], "filename": job["files"][1][0]})
+                return
             if p.path == "/api/download":
                 job_id = qs.get("jobId", [""])[0]
                 with _LOCK:

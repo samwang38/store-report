@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>分析報表</title>
+<!-- 本機工具的網頁版分析：表格畫法與週報小幫手 /liff/analysis 相同（資料由 analysis_snapshot.py 轉出），只在本機開、不用登入 LINE -->
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--fg:#1d1d1f;--muted:#6e6e73;--line:#d2d2d7;--accent:#0071e3;--fill:#f5f5f7;
+  --shadow:0 1px 2px rgba(0,0,0,.04),0 6px 24px rgba(0,0,0,.05)}
+@media (prefers-color-scheme:dark){:root{--bg:#000;--card:#161617;--fg:#f5f5f7;--muted:#a1a1a6;--line:#38383a;--accent:#2997ff;--fill:#1d1d1f;--shadow:none;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 -apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC",sans-serif;padding:32px 28px;-webkit-font-smoothing:antialiased}
+main{max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+h1{font-size:28px;margin:0;letter-spacing:-.02em}
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.sub{color:var(--muted);font-size:15px;margin:4px 0 0}
+.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+select,button{font:inherit;font-size:15px;border-radius:980px;height:40px}
+select{-webkit-appearance:none;appearance:none;background:var(--card) url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%2712%27%3E%3Cpath d=%27M3 4.5l3 3 3-3%27 fill=%27none%27 stroke=%27%236e6e73%27 stroke-width=%271.6%27 stroke-linecap=%27round%27/%3E%3C/svg%3E") no-repeat right 14px center;
+  color:var(--fg);border:1px solid var(--line);padding:0 38px 0 16px;min-width:220px}
+button{border:0;padding:0 18px;font-weight:600;background:var(--accent);color:#fff;cursor:pointer}
+.tabs{display:flex;gap:6px;overflow-x:auto;padding:2px;scrollbar-width:thin}
+.tabs button{flex:none;height:36px;padding:0 14px;font-size:14px;background:var(--card);color:var(--muted);box-shadow:var(--shadow)}
+.tabs button[aria-selected=true]{background:var(--accent);color:#fff}
+.grid{background:var(--card);border-radius:18px;box-shadow:var(--shadow);overflow:auto;max-height:calc(100vh - 210px);min-height:240px}
+.msg{background:var(--card);border-radius:18px;padding:20px;box-shadow:var(--shadow);color:var(--muted)}
+table.ana{border-collapse:separate;border-spacing:0;font-size:13px;font-variant-numeric:tabular-nums;table-layout:fixed;--a-head:#1F3864;--a-sec:#D6DCE4;--a-zebra:#F2F2F2;
+  --a-g1:#DDEBF7;--a-g2:#E2EFDA;--a-g3:#FFF2CC;--a-cur:#1F3864;--a-up:#2E7D32;--a-down:#C00000;--a-bg:var(--card);--a-line:#e3e3e8;--a-strong:#8e8e93}
+@media (prefers-color-scheme:dark){table.ana{--a-head:#1f3a6b;--a-sec:#2b333f;--a-zebra:#1c1c1e;--a-g1:#17293f;--a-g2:#1b2c1f;--a-g3:#30290f;
+  --a-cur:#9cc3ff;--a-up:#4cc463;--a-down:#ff6b6b;--a-line:#2c2c2e;--a-strong:#636366}}
+table.ana td{padding:6px 8px;border-bottom:1px solid var(--a-line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:var(--a-bg);line-height:1.35;height:30px}
+table.ana td.w{white-space:normal}
+table.ana td.L{border-left:2px solid var(--a-strong)}table.ana td.T{border-top:2px solid var(--a-strong)}
+table.ana td.b{font-weight:700}
+table.ana td.f-head{background:var(--a-head);color:#fff;font-weight:700}
+table.ana td.f-sec{background:var(--a-sec)}table.ana td.f-zebra{background:var(--a-zebra)}
+table.ana td.f-g1{background:var(--a-g1)}table.ana td.f-g2{background:var(--a-g2)}table.ana td.f-g3{background:var(--a-g3)}
+table.ana td.c-white{color:#fff}table.ana td.c-cur{color:var(--a-cur)}table.ana td.c-up{color:var(--a-up)}table.ana td.c-down{color:var(--a-down)}
+table.ana td.sl{position:sticky;z-index:1}table.ana td.st{position:sticky;z-index:2}table.ana td.st.sl{z-index:3}
+</style>
+</head>
+<body>
+<main>
+  <header class="head"><div><h1>分析報表</h1><p class="sub" id="sub">載入中…</p></div>
+    <div class="bar"><select id="weekSel" aria-label="週期"></select><button id="dl" type="button">下載 Excel</button></div></header>
+  <p class="sub">切換週期只會列出這次開啟工具後產生過的報表；要看其他週，回到工具產生該週即可。</p>
+  <nav class="tabs" id="tabs" role="tablist" aria-label="分析頁"></nav>
+  <div class="grid" id="grid" role="tabpanel"></div>
+  <div class="msg" id="msg" hidden></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let SNAP = null, SHEET = 0, JOB = new URLSearchParams(location.search).get("jobId");
+const ALIGN = { l: "left", c: "center", r: "right" };
+const isNum = (t) => /^[+\-]?[\d,]+(\.\d+)?(%|pp)?$/.test(t);
+const fmtDay = (ymd) => { const [y, m, d] = ymd.split("-"); return Number(m) + "/" + Number(d); };
+function cellNode(item, styles, col, widths, freezeCols){
+  const [text, si, cs, rs] = item, st = styles[si] || {}, td = document.createElement("td");
+  td.textContent = text;
+  if (cs > 1) td.colSpan = cs; if (rs > 1) td.rowSpan = rs;
+  const cls = [];
+  if (st.f) { if (st.f[0] === "#") td.style.background = st.f; else cls.push("f-" + st.f); }
+  if (st.c) { if (st.c[0] === "#") td.style.color = st.c; else cls.push("c-" + st.c); }
+  if (st.b) cls.push("b"); if (st.w) cls.push("w"); if (st.L) cls.push("L"); if (st.T) cls.push("T");
+  td.style.textAlign = st.a ? ALIGN[st.a] : (isNum(text) ? "right" : "left");
+  if (st.i) td.style.paddingLeft = (8 + st.i * 12) + "px";
+  if (col < freezeCols) { cls.push("sl"); td.style.left = widths.slice(0, col).reduce((a, b) => a + b, 0) + "px"; }
+  td.className = cls.join(" ");
+  return td;
+}
+function drawSheet(i){
+  SHEET = i;
+  [...$("tabs").children].forEach((b, k) => { b.setAttribute("aria-selected", String(k === i));
+    if (k === i) b.scrollIntoView({ block: "nearest", inline: "nearest" }); });
+  const sh = SNAP.sheets[i], [fr, fc] = sh.freeze;
+  const widths = sh.widths.map(w => Math.max(44, Math.round(w * 7.4)));
+  const table = document.createElement("table"); table.className = "ana";
+  const cg = document.createElement("colgroup");
+  widths.forEach(w => { const c = document.createElement("col"); c.style.width = w + "px"; cg.append(c); });
+  table.append(cg); table.style.width = widths.reduce((a, b) => a + b, 0) + "px";
+  const tb = document.createElement("tbody");
+  sh.rows.forEach(r => { const tr = document.createElement("tr");
+    r.forEach((item, col) => { if (item) tr.append(cellNode(item, SNAP.styles, col, widths, fc)); }); tb.append(tr); });
+  table.append(tb);
+  const grid = $("grid"); grid.innerHTML = ""; grid.append(table); grid.scrollTop = 0; grid.scrollLeft = 0;
+  let top = 0;
+  [...tb.rows].slice(0, fr).forEach(tr => { [...tr.cells].forEach(td => { td.classList.add("st"); td.style.top = top + "px"; }); top += tr.offsetHeight; });
+}
+function fail(text){ $("msg").textContent = text; $("msg").hidden = false; $("grid").hidden = true; $("tabs").hidden = true; }
+async function getJson(url){ const r = await fetch(url); const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || "讀取失敗"); return d; }
+async function openJob(){
+  const d = await getJson("/api/analysis?jobId=" + encodeURIComponent(JOB));
+  SNAP = d.snapshot;
+  const tabs = $("tabs"); tabs.innerHTML = "";
+  SNAP.sheets.forEach((s, i) => { const b = document.createElement("button"); b.type = "button"; b.setAttribute("role", "tab");
+    b.textContent = s.name; b.onclick = () => drawSheet(i); tabs.append(b); });
+  $("msg").hidden = true; $("grid").hidden = false; tabs.hidden = false;
+  drawSheet(Math.min(SHEET, SNAP.sheets.length - 1));
+  history.replaceState(null, "", "?jobId=" + JOB);
+}
+(async () => {
+  try {
+    const { items } = await getJson("/api/analysis/list");
+    if (!items.length) return fail("這次開啟工具後還沒有產生報表。回到工具產生報表後，再按「在網頁上看分析」。");
+    if (!JOB || !items.some(x => x.jobId === JOB)) JOB = items[0].jobId;
+    const sel = $("weekSel");
+    items.forEach(x => { const o = document.createElement("option"); o.value = x.jobId;
+      o.textContent = (x.shopId ? x.shopId + "｜" : "") + fmtDay(x.wkStart) + "–" + fmtDay(x.wkEnd); sel.append(o); });
+    sel.value = JOB;
+    const cur = items.find(x => x.jobId === JOB);
+    $("sub").textContent = "門市 " + (cur.shopId || "") + "｜本機產生，不用登入 LINE";
+    sel.onchange = () => { JOB = sel.value; const c = items.find(x => x.jobId === JOB);
+      $("sub").textContent = "門市 " + (c.shopId || "") + "｜本機產生，不用登入 LINE"; openJob().catch(e => fail(e.message)); };
+    $("dl").onclick = () => { location.href = "/api/download?jobId=" + encodeURIComponent(JOB) + "&part=1"; };
+    await openJob();
+  } catch (e) { fail(e.message); }
+})();
+</script>
+</body>
+</html>
