@@ -11,7 +11,18 @@
 @media (prefers-color-scheme:dark){:root{--bg:#000;--card:#161617;--fg:#f5f5f7;--muted:#a1a1a6;--line:#38383a;--accent:#2997ff;--fill:#1d1d1f;--shadow:none;color-scheme:dark}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 -apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC",sans-serif;padding:32px 28px;-webkit-font-smoothing:antialiased}
-main{max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+main{max-width:none;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.view-bar{display:flex;gap:10px;align-items:center}
+.view-bar>nav{flex:1;min-width:0}
+.tools{display:flex;gap:6px;flex:none}
+@media (max-width:600px){.view-bar{flex-wrap:wrap}.view-bar>nav{flex-basis:100%}.tools{margin-left:auto}}
+.tools button{height:36px;min-width:40px;padding:0 12px;font-size:14px;font-weight:600;background:var(--card);color:var(--fg);box-shadow:var(--shadow);border-radius:980px}
+.tools button[disabled]{opacity:.4}
+body.fs{overflow:hidden}
+body.fs #view{animation:none!important;opacity:1}
+body.fs #view{position:fixed;inset:0;z-index:50;background:var(--bg);padding:10px 12px calc(10px + env(safe-area-inset-bottom));gap:8px;display:flex;flex-direction:column}
+body.fs #view>.grid{flex:1;max-height:none;min-height:0;border-radius:12px}
+body.fs #meta{display:none}
 h1{font-size:28px;margin:0;letter-spacing:-.02em}
 .head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .sub{color:var(--muted);font-size:15px;margin:4px 0 0}
@@ -25,11 +36,11 @@ button{border:0;padding:0 18px;font-weight:600;background:var(--accent);color:#f
 .tabs button[aria-selected=true]{background:var(--accent);color:#fff}
 .grid{background:var(--card);border-radius:18px;box-shadow:var(--shadow);overflow:auto;max-height:calc(100vh - 210px);min-height:240px}
 .msg{background:var(--card);border-radius:18px;padding:20px;box-shadow:var(--shadow);color:var(--muted)}
-table.ana{border-collapse:separate;border-spacing:0;font-size:13px;font-variant-numeric:tabular-nums;table-layout:auto;--a-head:#1F3864;--a-sec:#D6DCE4;--a-zebra:#F2F2F2;
+table.ana{border-collapse:separate;border-spacing:0;font-size:var(--ana-fs,13px);font-variant-numeric:tabular-nums;table-layout:auto;--a-head:#1F3864;--a-sec:#D6DCE4;--a-zebra:#F2F2F2;
   --a-g1:#DDEBF7;--a-g2:#E2EFDA;--a-g3:#FFF2CC;--a-cur:#1F3864;--a-up:#2E7D32;--a-down:#C00000;--a-bg:var(--card);--a-line:#e3e3e8;--a-strong:#8e8e93}
 @media (prefers-color-scheme:dark){table.ana{--a-head:#1f3a6b;--a-sec:#2b333f;--a-zebra:#1c1c1e;--a-g1:#17293f;--a-g2:#1b2c1f;--a-g3:#30290f;
   --a-cur:#9cc3ff;--a-up:#4cc463;--a-down:#ff6b6b;--a-line:#2c2c2e;--a-strong:#636366}}
-table.ana td{padding:6px 8px;border-bottom:1px solid var(--a-line);white-space:nowrap;background:var(--a-bg);line-height:1.35;height:30px}
+table.ana td{padding:.46em .62em;border-bottom:1px solid var(--a-line);white-space:nowrap;background:var(--a-bg);line-height:1.35;height:2.3em}
 table.ana td.clip{max-width:150px;overflow:hidden;text-overflow:ellipsis}
 table.ana tr.meas td{height:0;padding:0;border:0;line-height:0}
 table.ana td.note{white-space:normal;color:var(--muted);border-bottom:0;height:auto;padding:10px 8px}
@@ -48,8 +59,10 @@ table.ana td.sl{position:sticky;z-index:1}table.ana td.st{position:sticky;z-inde
   <header class="head"><div><h1>分析報表</h1><p class="sub" id="sub">載入中…</p></div>
     <div class="bar"><select id="weekSel" aria-label="週期"></select><button id="dl" type="button">下載 Excel</button></div></header>
   <p class="sub">切換週期只會列出這次開啟工具後產生過的報表；要看其他週，回到工具產生該週即可。</p>
-  <nav class="tabs" id="tabs" role="tablist" aria-label="分析頁"></nav>
-  <div class="grid" id="grid" role="tabpanel"></div>
+  <section id="view" style="display:flex;flex-direction:column;gap:12px">
+    <div class="view-bar"><nav class="tabs" id="tabs" role="tablist" aria-label="分析頁"></nav><div class="tools"><button type="button" id="fsDown" aria-label="縮小字體">A−</button><button type="button" id="fsUp" aria-label="放大字體">A＋</button><button type="button" id="fsBtn">全螢幕</button></div></div>
+    <div class="grid" id="grid" role="tabpanel"></div>
+  </section>
   <div class="msg" id="msg" hidden></div>
 </main>
 <script>
@@ -101,6 +114,32 @@ function drawSheet(i){
   let top = 0;
   [...tb.rows].slice(0, fr).forEach(tr => { [...tr.cells].forEach(td => { td.classList.add("st"); td.style.top = top + "px"; }); top += tr.offsetHeight; });
 }
+// 字體大小（記在這台瀏覽器）與全螢幕：全螢幕時表格佔滿整個視窗，可用 Esc 或「結束全螢幕」離開
+const FS_STEPS = [11, 12, 13, 14, 16, 18, 20, 22];
+let FS = 2;
+try { const v = Number(localStorage.getItem("anaFont")); if (FS_STEPS.includes(v)) FS = FS_STEPS.indexOf(v); } catch (e) {}
+function applyFont(redraw){
+  document.documentElement.style.setProperty("--ana-fs", FS_STEPS[FS] + "px");
+  $("fsDown").disabled = FS === 0; $("fsUp").disabled = FS === FS_STEPS.length - 1;
+  try { localStorage.setItem("anaFont", String(FS_STEPS[FS])); } catch (e) {}
+  if (redraw && SNAP) drawSheet(SHEET);
+}
+$("fsDown").onclick = () => { if (FS > 0) { FS--; applyFont(true); } };
+$("fsUp").onclick = () => { if (FS < FS_STEPS.length - 1) { FS++; applyFont(true); } };
+function setFull(on){
+  document.body.classList.toggle("fs", on);
+  $("fsBtn").textContent = on ? "結束全螢幕" : "全螢幕";
+  const de = document.documentElement;
+  try {
+    if (on && de.requestFullscreen && !document.fullscreenElement) de.requestFullscreen().catch(() => {});
+    if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  } catch (e) {}
+  if (SNAP) drawSheet(SHEET);
+}
+$("fsBtn").onclick = () => setFull(!document.body.classList.contains("fs"));
+document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement && document.body.classList.contains("fs")) setFull(false); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.body.classList.contains("fs") && !document.fullscreenElement) setFull(false); });
+applyFont(false);
 function fail(text){ $("msg").textContent = text; $("msg").hidden = false; $("grid").hidden = true; $("tabs").hidden = true; }
 async function getJson(url){ const r = await fetch(url); const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || "讀取失敗"); return d; }
 async function openJob(){
