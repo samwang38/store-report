@@ -25,11 +25,14 @@ button{border:0;padding:0 18px;font-weight:600;background:var(--accent);color:#f
 .tabs button[aria-selected=true]{background:var(--accent);color:#fff}
 .grid{background:var(--card);border-radius:18px;box-shadow:var(--shadow);overflow:auto;max-height:calc(100vh - 210px);min-height:240px}
 .msg{background:var(--card);border-radius:18px;padding:20px;box-shadow:var(--shadow);color:var(--muted)}
-table.ana{border-collapse:separate;border-spacing:0;font-size:13px;font-variant-numeric:tabular-nums;table-layout:fixed;--a-head:#1F3864;--a-sec:#D6DCE4;--a-zebra:#F2F2F2;
+table.ana{border-collapse:separate;border-spacing:0;font-size:13px;font-variant-numeric:tabular-nums;table-layout:auto;--a-head:#1F3864;--a-sec:#D6DCE4;--a-zebra:#F2F2F2;
   --a-g1:#DDEBF7;--a-g2:#E2EFDA;--a-g3:#FFF2CC;--a-cur:#1F3864;--a-up:#2E7D32;--a-down:#C00000;--a-bg:var(--card);--a-line:#e3e3e8;--a-strong:#8e8e93}
 @media (prefers-color-scheme:dark){table.ana{--a-head:#1f3a6b;--a-sec:#2b333f;--a-zebra:#1c1c1e;--a-g1:#17293f;--a-g2:#1b2c1f;--a-g3:#30290f;
   --a-cur:#9cc3ff;--a-up:#4cc463;--a-down:#ff6b6b;--a-line:#2c2c2e;--a-strong:#636366}}
-table.ana td{padding:6px 8px;border-bottom:1px solid var(--a-line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:var(--a-bg);line-height:1.35;height:30px}
+table.ana td{padding:6px 8px;border-bottom:1px solid var(--a-line);white-space:nowrap;background:var(--a-bg);line-height:1.35;height:30px}
+table.ana td.clip{max-width:150px;overflow:hidden;text-overflow:ellipsis}
+table.ana tr.meas td{height:0;padding:0;border:0;line-height:0}
+table.ana td.note{white-space:normal;color:var(--muted);border-bottom:0;height:auto;padding:10px 8px}
 table.ana td.w{white-space:normal}
 table.ana td.L{border-left:2px solid var(--a-strong)}table.ana td.T{border-top:2px solid var(--a-strong)}
 table.ana td.b{font-weight:700}
@@ -51,6 +54,7 @@ table.ana td.sl{position:sticky;z-index:1}table.ana td.st{position:sticky;z-inde
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
+const NARROW = innerWidth < 600;
 let SNAP = null, SHEET = 0, JOB = new URLSearchParams(location.search).get("jobId");
 const ALIGN = { l: "left", c: "center", r: "right" };
 const isNum = (t) => /^[+\-]?[\d,]+(\.\d+)?(%|pp)?$/.test(t);
@@ -65,7 +69,7 @@ function cellNode(item, styles, col, widths, freezeCols){
   if (st.b) cls.push("b"); if (st.w) cls.push("w"); if (st.L) cls.push("L"); if (st.T) cls.push("T");
   td.style.textAlign = st.a ? ALIGN[st.a] : (isNum(text) ? "right" : "left");
   if (st.i) td.style.paddingLeft = (8 + st.i * 12) + "px";
-  if (col < freezeCols) { cls.push("sl"); td.style.left = widths.slice(0, col).reduce((a, b) => a + b, 0) + "px"; }
+  if (col < freezeCols) { cls.push("sl"); td.dataset.col = col; if (NARROW) cls.push("clip"); }
   td.className = cls.join(" ");
   return td;
 }
@@ -74,16 +78,26 @@ function drawSheet(i){
   [...$("tabs").children].forEach((b, k) => { b.setAttribute("aria-selected", String(k === i));
     if (k === i) b.scrollIntoView({ block: "nearest", inline: "nearest" }); });
   const sh = SNAP.sheets[i], [fr, fc] = sh.freeze;
-  const widths = sh.widths.map(w => Math.max(44, Math.round(w * 7.4)));
+  // 欄寬當最小寬度，內容較長時欄位自動撐開，數字一定完整顯示；手機上凍結的列名欄最多 150px（列名過長以 … 截斷）
+  const widths = sh.widths.map((w, c) => Math.min(NARROW && c < Math.max(fc, 1) ? 150 : 9999, Math.max(44, Math.round(w * 7.4))));
   const table = document.createElement("table"); table.className = "ana";
   const cg = document.createElement("colgroup");
   widths.forEach(w => { const c = document.createElement("col"); c.style.width = w + "px"; cg.append(c); });
-  table.append(cg); table.style.width = widths.reduce((a, b) => a + b, 0) + "px";
+  table.append(cg); table.style.minWidth = widths.reduce((a, b) => a + b, 0) + "px";
   const tb = document.createElement("tbody");
   sh.rows.forEach(r => { const tr = document.createElement("tr");
-    r.forEach((item, col) => { if (item) tr.append(cellNode(item, SNAP.styles, col, widths, fc)); }); tb.append(tr); });
+    // 說明列（只有第一格有字、沒有底色）：橫跨整列並可換行，不要把第一欄撐寬
+    const first = r[0], st0 = first ? (SNAP.styles[first[1]] || {}) : {};
+    if (first && first[0] && !st0.f && r.slice(1).every(x => !x || x[0] === "")) {
+      const td = document.createElement("td"); td.textContent = first[0]; td.colSpan = r.length; td.className = "note"; tr.append(td);
+    } else r.forEach((item, col) => { if (item) tr.append(cellNode(item, SNAP.styles, col, widths, fc)); });
+    tb.append(tr); });
+  const meas = document.createElement("tr"); meas.className = "meas";   // 量每欄實際左緣，給凍結欄定位
+  widths.forEach(() => meas.append(document.createElement("td"))); tb.append(meas);
   table.append(tb);
   const grid = $("grid"); grid.innerHTML = ""; grid.append(table); grid.scrollTop = 0; grid.scrollLeft = 0;
+  const lefts = [...meas.cells].map(td => td.offsetLeft);
+  tb.querySelectorAll("td.sl").forEach(td => { td.style.left = lefts[Number(td.dataset.col)] + "px"; });
   let top = 0;
   [...tb.rows].slice(0, fr).forEach(tr => { [...tr.cells].forEach(td => { td.classList.add("st"); td.style.top = top + "px"; }); top += tr.offsetHeight; });
 }
