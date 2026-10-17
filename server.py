@@ -634,9 +634,13 @@ def fill_mysetup_sheets(wb, shop_id, records, employees, dates, log=lambda m: No
     in_report = {code for code, _ in employees}
     all_unmatched = {}
     detail_blocks = []
+    week = None
     for sheet_name, start_key, end_key in MYSETUP_SHEETS:
         ws = wb[sheet_name]
         counts, unmatched, skipped = mysetup.summarize(records, mapping, dates[start_key], dates[end_key])
+        if start_key == "wk_start":   # 本週每人提交數回報 Worker，閉店網站週進度改用這份正式數字
+            week = {"week_start": dates["wk_start"].isoformat(), "counts": dict(counts),
+                    "unmatched": [{"name": n, "count": c} for n, c in unmatched.items()]}
         for name, n in unmatched.items():   # 週跨月時本週可能有本月沒有的名字，兩頁取聯集（取較大筆數）
             all_unmatched[name] = max(all_unmatched.get(name, 0), n)
         # 不在報表員工列的：人工指定到本月沒交易的員工、或還沒對上的原始名字 → 補列在加總列上方
@@ -668,7 +672,7 @@ def fill_mysetup_sheets(wb, shop_id, records, employees, dates, log=lambda m: No
     mysetup.save_unmatched(shop_id, all_unmatched, dates["mo_end"].isoformat())
     employees_out = [{"code": code, "name": emp_names.get(code, ("", ""))[0], "nameLang": emp_names.get(code, ("", ""))[1]}
                      for code, _ in employees]
-    return all_unmatched, employees_out
+    return all_unmatched, employees_out, week
 
 
 MYCOACH_DUE_COL, MYCOACH_ACTUAL_COL, MYCOACH_RATE_COL = 26, 27, 28   # Z 應充值數、AA 實際充值數、AB 儲值率
@@ -1766,11 +1770,12 @@ def build_report_workbook(payload, log=lambda m: None):
         engine.fill_sheet_mysetup_detail(wb, None)   # 分析頁固定存在，沒有匯出檔時寫「無資料」
     else:
         log("填入 13-14 MySetup 提交數量…")
-        unmatched, ms_employees = fill_mysetup_sheets(wb, shop_id, mysetup_records, employees, dates, log=log)
+        unmatched, ms_employees, ms_week = fill_mysetup_sheets(wb, shop_id, mysetup_records, employees, dates, log=log)
         source_meta["mysetupUnmatched"] = len(unmatched)
         source_meta["mysetup"] = {
             "unmatched": [{"name": n, "count": c} for n, c in sorted(unmatched.items(), key=lambda x: -x[1])],
             "employees": ms_employees,   # 週報小幫手設定對照時的下拉選項
+            "week": ms_week,             # 本週每人 MySetup 數 {week_start, counts, unmatched}
         }
 
     mc_session = mycoach_client.current_session()
