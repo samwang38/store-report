@@ -1652,7 +1652,7 @@ def build_report_workbook(payload, log=lambda m: None):
     validate_template_sheet_order(wb)
     template_employees = engine.load_employees(wb) or engine.EMPLOYEES
     template_employee_count = len(template_employees)
-    fiscal_start = engine.load_fiscal_year_start(wb)
+    fiscal_start = engine.resolve_fiscal_year_start(wk_start, engine.load_fiscal_year_start(wb))
     quarter_start = engine.compute_quarter_start(wk_start, fiscal_start)
 
     log("查詢 EPB 銷售資料…")

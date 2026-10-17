@@ -296,19 +296,43 @@ def period(df, start: date, end: date) -> pd.DataFrame:
     s, e = pd.Timestamp(start), pd.Timestamp(f'{end} 23:59:59')
     return df[(df['單據日期'] >= s) & (df['單據日期'] <= e)]
 
+def fiscal_year_start_for(d: date) -> date:
+    """Apple 財年起始日（規則）：財年在九月最後一個週六結束，新財年從隔天週日開始。
+    回傳包含 d 的那個財年的起始日。財年多為 52 週，偶爾 53 週（例：2027-09-26～2028-09-30）。"""
+    def start_of(year):
+        sep30 = date(year, 9, 30)
+        last_sat = sep30 - timedelta(days=(sep30.weekday() - 5) % 7)
+        return last_sat + timedelta(days=1)
+    s = start_of(d.year)
+    return s if d >= s else start_of(d.year - 1)
+
+
+def resolve_fiscal_year_start(week_start: date, configured: 'date | None') -> 'date | None':
+    """決定 week_start 該用的財年起始日。
+    configured＝設定頁 D2；沒設定（None）就回 None（維持曆法季度 fallback）。
+    D2 落在「規則起始日 ～ week_start」之間（正常就是等於規則起始日）就沿用 D2；
+    D2 已落後（week_start 進入之後的財年）或晚於 week_start（補做舊財年的週）就改用規則，不改寫 Excel。"""
+    if configured is None:
+        return None
+    rule = fiscal_year_start_for(week_start)
+    return configured if rule <= configured <= week_start else rule
+
+
 def compute_quarter_start(week_start: date, fiscal_year_start: 'date | None' = None) -> date:
     """Return the start date of the fiscal quarter containing week_start.
 
     If fiscal_year_start is provided (read from 設定 sheet col D2):
-      - Fiscal year = 52 weeks (4 × 13), origin = fiscal_year_start
+      - D2 先經 resolve_fiscal_year_start 校正（D2 落後時自動換年）
       - Quarter start = fiscal_year_start + (quarter_index × 13 weeks)
+      - 53 週年度的第 53 週歸 Q4（Q4 起始日不變）
 
     Falls back to calendar-quarter logic if fiscal_year_start is None.
     """
     if fiscal_year_start is not None:
+        fiscal_year_start = resolve_fiscal_year_start(week_start, fiscal_year_start)
         delta_days = (week_start - fiscal_year_start).days
         week_in_year = delta_days // 7          # 0-based week index from year start
-        quarter_idx  = week_in_year // 13       # 0-based quarter index (0=Q1,1=Q2…)
+        quarter_idx  = min(week_in_year // 13, 3)   # 0-based quarter index (0=Q1,1=Q2…)；第 53 週歸 Q4
         return fiscal_year_start + timedelta(weeks=quarter_idx * 13)
 
     # Fallback: calendar-quarter (original logic)
@@ -319,11 +343,14 @@ def compute_quarter_start(week_start: date, fiscal_year_start: 'date | None' = N
 
 
 def compute_fiscal_week_number(week_start: date, fiscal_year_start: date) -> tuple:
-    """Returns (quarter_num, week_in_quarter) — both 1-based."""
+    """Returns (quarter_num, week_in_quarter) — both 1-based.
+    fiscal_year_start（D2）先經 resolve_fiscal_year_start 校正；53 週年度的第 53 週標 Q4W14。"""
+    fiscal_year_start = resolve_fiscal_year_start(week_start, fiscal_year_start)
     delta_days      = (week_start - fiscal_year_start).days
     week_in_year    = delta_days // 7
-    quarter_num     = week_in_year // 13 + 1
-    week_in_quarter = week_in_year % 13 + 1
+    quarter_idx     = min(week_in_year // 13, 3)
+    quarter_num     = quarter_idx + 1
+    week_in_quarter = week_in_year - quarter_idx * 13 + 1
     return quarter_num, week_in_quarter
 
 def safe_rate(num, den):
@@ -2773,7 +2800,7 @@ def main():
     else:
         print(f'  員工設定: 未找到「設定」工作表，使用預設清單（{len(EMPLOYEES)} 人）')
 
-    fiscal_year_start = load_fiscal_year_start(wb)
+    fiscal_year_start = resolve_fiscal_year_start(wk_start, load_fiscal_year_start(wb))
     if fiscal_year_start:
         q_num, w_num = compute_fiscal_week_number(wk_start, fiscal_year_start)
         print(f'  財務週次: 年度起始 {fiscal_year_start}，本週為 Q{q_num} W{w_num:02d}')
