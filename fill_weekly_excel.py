@@ -2342,7 +2342,7 @@ def fill_sheet_promo(wb, df_cur, sacare_prices, dates: dict):
 
 
 # ── 23. 新機上市追蹤 ──
-def fill_sheet_launch(wb, df_track, dates: dict):
+def fill_sheet_launch(wb, df_track, dates: dict, fiscal_start=None):
     print(f'  分析頁：{LAUNCH_SHEET}', flush=True)
     ws = _reset_detail_sheet(wb, LAUNCH_SHEET, freeze='A1')
     for col, width in zip('ABCDEFGH', (10, 16, 11, 11, 16, 11, 11, 11)):
@@ -2410,31 +2410,39 @@ def fill_sheet_launch(wb, df_track, dates: dict):
         title = (f'{name} AppleCare+ 搭售率（首賣 {n0:%Y/%m/%d}；只算 AppleCare+，不含 SAcare）' if n0 is not None
                  else f'{name} AppleCare+ 搭售率（尚未開賣）')
         row = _title_row(ws, row, title, 8, st)
-        _head_cells(ws, row, 1, ['上市週', '期間', '台數', 'AppleCare+ 套數', '搭售率', '累計台數', '累計套數', '累計搭售率'], st)
+        _head_cells(ws, row, 1, ['週次', '期間', '台數', 'AppleCare+ 套數', '搭售率', '累計台數', '累計套數', '累計搭售率'], st)
         row += 1
         if n0 is None:
             row += 1
             continue
-        dev_w = weekly(dev_mask, n0, report_end)
-        ac_w = weekly(ac_mask, n0, report_end)
+        # 期間跟週報週數走（週日～週六）：從首賣日所在的週報週起，到本週為止，最多 LAUNCH_WEEKS 週
+        s = n0 - pd.Timedelta(days=(n0 - pd.Timestamp(dates['wk_start'])).days % 7)
         cum_u = cum_a = 0
         for k in range(LAUNCH_WEEKS):
-            s, e, u = dev_w[k]
-            a = ac_w[k][2]
-            if u is not None:
-                cum_u += u
-                cum_a += a
+            e = s + pd.Timedelta(days=6)
+            if e > report_end:
+                break
+            wm = (d['單據日期'] >= s) & (d['單據日期'] < e + pd.Timedelta(days=1))
+            u, a = _net_units(d, dev_mask & wm), _net_units(d, ac_mask & wm)
+            cum_u += u
+            cum_a += a
+            if fiscal_start:
+                q, w = compute_fiscal_week_number(s.date(), fiscal_start)
+                label = f'Q{q}W{w:02d}'
+            else:
+                label = f'第 {k + 1} 週'
             vals = [f'{s:%m/%d}~{e:%m/%d}', u, a, safe_rate(a, u) if u else None,
-                    cum_u if u is not None else None, cum_a if u is not None else None,
-                    safe_rate(cum_a, cum_u) if u is not None and cum_u else None]
-            row = _value_row(ws, row, f'第 {k + 1} 週', vals, fmts, st)
+                    cum_u, cum_a, safe_rate(cum_a, cum_u) if cum_u else None]
+            row = _value_row(ws, row, label, vals, fmts, st)
+            s += pd.Timedelta(days=7)
         tm = (d['單據日期'] >= n0) & (d['單據日期'] < report_end + pd.Timedelta(days=1))
         u, a = _net_units(d, dev_mask & tm), _net_units(d, ac_mask & tm)
         row = _value_row(ws, row, '上市至今', [f'{n0:%m/%d}~{report_end:%m/%d}', u, a, safe_rate(a, u) if u else None,
                                                None, None, None], fmts, st, bold=True)
         row += 1
     ws.cell(row=row, column=1).value = ('上市週從首賣日起每 7 天一週；只列已過完的週。對照期間為對照機種首賣後同一週的起始日。'
-                                        '累計比＝今年累計 ÷ 對照累計。「上市至今」含未過完的週。')
+                                        '累計比＝今年累計 ÷ 對照累計。AppleCare+ 搭售率區塊的期間跟週報週數走（週日～週六），'
+                                        '從首賣日所在的週起算到本週。')
     ws.cell(row=row, column=1).font = st['font']
 
 

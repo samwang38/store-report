@@ -1727,7 +1727,7 @@ def build_report_workbook(payload, log=lambda m: None):
     except Exception as exc:  # 查不到就留空，報表照常
         df_launch = None
         log(f"  ⚠ 新機上市追蹤資料查詢失敗，新機上市追蹤頁留空：{exc}")
-    engine.fill_sheet_launch(wb, df_launch, dates)
+    engine.fill_sheet_launch(wb, df_launch, dates, fiscal_start=fiscal_start)
 
     log("查詢第 12 頁 ERP BI（總業績/3PP/原廠/Apple毛利/3PP毛利）…")
     try:
