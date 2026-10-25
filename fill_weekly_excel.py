@@ -149,25 +149,26 @@ PRODUCT_ROWS = {
     27: (3001.0, {6335.0}, None, None),           # iPhone 17e
     28: (3001.0, {6345.0}, None, None),           # iPhone 18 Pro
     29: (3001.0, {6346.0}, None, None),           # iPhone 18 Pro Max
-    31: (3001.0, {6321.0, 6322.0}, None, None),
-    32: (3001.0, {6317.0, 6318.0, 6336.0}, None, None),
-    33: (3001.0, {6319.0, 6338.0}, None, None),
-    34: (3001.0, {6331.0, 6332.0}, None, None),
-    35: (3001.0, {6333.0}, None, None),
-    36: (3001.0, {6313.0}, None, None),
-    38: (3002.0, {6100.0}, '第一代', None),
-    39: (3002.0, {6100.0}, '2nd', None),
-    40: (3002.0, {6100.0}, 'USB-C', None),
-    41: (3002.0, {6100.0}, 'PRO', 'keyboard'),  # 排除 Magic Keyboard for iPad Pro
+    30: (3001.0, {6347.0}, None, None),           # iPhone Duo（2026-10 上市）
+    32: (3001.0, {6321.0, 6322.0}, None, None),
+    33: (3001.0, {6317.0, 6318.0, 6336.0}, None, None),
+    34: (3001.0, {6319.0, 6338.0}, None, None),
+    35: (3001.0, {6331.0, 6332.0}, None, None),
+    36: (3001.0, {6333.0}, None, None),
+    37: (3001.0, {6313.0}, None, None),
+    39: (3002.0, {6100.0}, '第一代', None),
+    40: (3002.0, {6100.0}, '2nd', None),
+    41: (3002.0, {6100.0}, 'USB-C', None),
+    42: (3002.0, {6100.0}, 'PRO', 'keyboard'),  # 排除 Magic Keyboard for iPad Pro
 }
 # 新機型上市：在模板第 1 頁插列、這裡補一列並重編號（row = Excel 列 − 1）
 SUBTOTAL_ROWS = {
     8:  list(range(1, 8)),   # CPU 小計（含 MacBook Neo row 7）
     16: list(range(9, 16)),  # 音頻小計
     22: list(range(17, 22)), # Watch 小計
-    30: list(range(23, 30)), # iPhone 小計
-    37: list(range(31, 37)), # iPad 小計
-    42: list(range(38, 42)), # Apple Pencil 小計
+    31: list(range(23, 31)), # iPhone 小計
+    38: list(range(32, 38)), # iPad 小計
+    43: list(range(39, 43)), # Apple Pencil 小計
 }
 
 # ─── CLI ───────────────────────────────────────────────────────────────────────
@@ -2193,8 +2194,13 @@ LAUNCH_PAIRS = [
     ('Watch Ultra 4',     {6350.0}, 3001.0, 'Watch Ultra 3',     {6328.0}),
     ('AirPods 5',         {6348.0}, 3002.0, 'AirPods 4',         {6312.0}),
 ]
+# 沒有對照機種、改追 AppleCare+ 搭售率的新機：(機種, C6, C3, ACPP 品名關鍵字)。只算 AppleCare+，不含 SAcare
+LAUNCH_ACPP = [
+    ('iPhone Duo', {6347.0}, 3001.0, 'iphone duo'),
+]
 LAUNCH_WEEKS = 12
-LAUNCH_C6 = sorted({int(c) for p in LAUNCH_PAIRS for c in (p[1] | p[4])})
+LAUNCH_C6 = sorted({int(c) for p in LAUNCH_PAIRS for c in (p[1] | p[4])} |
+                   {int(c) for p in LAUNCH_ACPP for c in p[1]})
 
 C4_NAMES: dict = {}   # 類別 4 名稱（server 從 ERP 帶入；查不到時顯示代碼）
 WARRANTY_DEVICES = [('Mac', 'cpu_total', 'acpp_mac', 'sa_cpu'), ('iPad', 'ipad', 'acpp_ipad', 'sa_ipad'),
@@ -2393,8 +2399,42 @@ def fill_sheet_launch(wb, df_track, dates: dict):
             row = _value_row(ws, row, f'第 {k + 1} 週', vals,
                              ['@', '#,##0', '#,##0', '@', '#,##0', '#,##0', '0%'], st)
         row += 1
+
+    # 無對照機種的新機：追 AppleCare+ 搭售率（套數 ÷ 台數，ACPP 依品名關鍵字對機種）
+    st['groups'] = (3, 6)
+    fmts = ['@', '#,##0', '#,##0', '0.0%', '#,##0', '#,##0', '0.0%']
+    for name, c6, c3, kw in LAUNCH_ACPP:
+        dev_mask = ((d['類別3代碼'] == c3) | d['品牌代碼'].isin(CERT_BRANDS)) & d['類別6代碼'].isin(c6) if len(d) else None
+        ac_mask = (d['類別3代碼'] == 3032.0) & d['名稱'].astype(str).str.lower().str.contains(kw, na=False) if len(d) else None
+        n0 = first_sale(dev_mask) if len(d) else None
+        title = (f'{name} AppleCare+ 搭售率（首賣 {n0:%Y/%m/%d}；只算 AppleCare+，不含 SAcare）' if n0 is not None
+                 else f'{name} AppleCare+ 搭售率（尚未開賣）')
+        row = _title_row(ws, row, title, 8, st)
+        _head_cells(ws, row, 1, ['上市週', '期間', '台數', 'AppleCare+ 套數', '搭售率', '累計台數', '累計套數', '累計搭售率'], st)
+        row += 1
+        if n0 is None:
+            row += 1
+            continue
+        dev_w = weekly(dev_mask, n0, report_end)
+        ac_w = weekly(ac_mask, n0, report_end)
+        cum_u = cum_a = 0
+        for k in range(LAUNCH_WEEKS):
+            s, e, u = dev_w[k]
+            a = ac_w[k][2]
+            if u is not None:
+                cum_u += u
+                cum_a += a
+            vals = [f'{s:%m/%d}~{e:%m/%d}', u, a, safe_rate(a, u) if u else None,
+                    cum_u if u is not None else None, cum_a if u is not None else None,
+                    safe_rate(cum_a, cum_u) if u is not None and cum_u else None]
+            row = _value_row(ws, row, f'第 {k + 1} 週', vals, fmts, st)
+        tm = (d['單據日期'] >= n0) & (d['單據日期'] < report_end + pd.Timedelta(days=1))
+        u, a = _net_units(d, dev_mask & tm), _net_units(d, ac_mask & tm)
+        row = _value_row(ws, row, '上市至今', [f'{n0:%m/%d}~{report_end:%m/%d}', u, a, safe_rate(a, u) if u else None,
+                                               None, None, None], fmts, st, bold=True)
+        row += 1
     ws.cell(row=row, column=1).value = ('上市週從首賣日起每 7 天一週；只列已過完的週。對照期間為對照機種首賣後同一週的起始日。'
-                                        '累計比＝今年累計 ÷ 對照累計。')
+                                        '累計比＝今年累計 ÷ 對照累計。「上市至今」含未過完的週。')
     ws.cell(row=row, column=1).font = st['font']
 
 

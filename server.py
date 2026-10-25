@@ -529,9 +529,11 @@ def _strip_korean(name):
 
 
 def load_launch_df(shop_id, wk_end):
-    """新機上市追蹤頁：只抓追蹤機種（新機與對照機種）近 3 年的銷售列。"""
+    """新機上市追蹤頁：只抓追蹤機種（新機與對照機種）近 3 年的銷售列，加上 AppleCare+ 追蹤機種的 ACPP 列。"""
+    acpp = "".join(f" or (l.cat3_id = 3032 and lower(l.name) like {quote_sql('%' + kw + '%')})"
+                   for _, _, _, kw in engine.LAUNCH_ACPP)
     return remote_sales_df(shop_id, [(wk_end - timedelta(days=3 * 366), wk_end)],
-                           extra_where="l.cat6_id in (" + ",".join(str(c) for c in engine.LAUNCH_C6) + ")")
+                           extra_where="l.cat6_id in (" + ",".join(str(c) for c in engine.LAUNCH_C6) + ")" + acpp)
 
 
 def epb_emp_names(codes):
