@@ -37,7 +37,9 @@ T = lambda h: datetime(DAY.year, DAY.month, DAY.day, h, 0, 0)
 DAILY = [("1001", 337277, "STUDIO A@士林文林", "iPhone", "王 CSR 彥翔", T(12)),
          ("1002", 337277, "STUDIO A@士林文林", "Watch", "盧 辰昕", T(15)),
          ("1003", 3842054, "STUDIOA@新店裕隆城", "iPhone", "陳 小明", T(16)),
-         ("1004", 544641, "STUDIO A@台中彩虹3C店", "iPhone", "林 一", T(17))]
+         ("1004", 544641, "STUDIO A@台中彩虹3C店", "iPhone", "林 一", T(17)),
+         ("1005", 444912, "STUDIO A＠高雄夢時代", "iPhone", "林 衿融", T(18)),
+         ("1006", 1293891, "STUDIO A@台北微風", "Watch", "張 三", T(19))]
 DAILY_NAME = f"Personal Setup_{DAY}_{DAY}.xlsx"
 
 
@@ -51,12 +53,12 @@ class ArchiveTest(unittest.TestCase):
 
     def test_parse_reads_apple_id(self):
         recs = mysetup.parse_personal_setup(make_xlsx(DAILY))
-        self.assertEqual({r["apple_id"] for r in recs}, {"337277", "3842054", "544641"})
+        self.assertEqual({r["apple_id"] for r in recs}, {"337277", "3842054", "544641", "444912", "1293891"})
         self.assertEqual(recs[0]["pos"], "STUDIO A@士林文林")
 
     def test_import_dedupes_and_splits_by_store(self):
         r = mm.import_file(make_xlsx(DAILY), DAILY_NAME, path=self.db)
-        self.assertEqual((r["rows"], r["new"], r["from"], r["to"]), (4, 4, DAY, DAY))
+        self.assertEqual((r["rows"], r["new"], r["from"], r["to"], r["company"]), (6, 6, DAY, DAY, True))
         self.assertEqual(mm.import_file(make_xlsx(DAILY), DAILY_NAME, path=self.db)["new"], 0)
         shilin = mm.records_for("004", DAY, DAY, path=self.db)
         self.assertEqual(sorted(x["uid"] for x in shilin), ["1001", "1002"])
@@ -76,6 +78,34 @@ class ArchiveTest(unittest.TestCase):
                          [start, DAY - timedelta(days=1), DAY + timedelta(days=1)])
         # 店長上傳檔涵蓋的日子不算缺
         self.assertEqual(mm.missing_days(start, DAY, path=self.db, also_covered=(start, DAY - timedelta(days=1))), [])
+
+    def test_single_store_export_covers_only_that_store(self):
+        """店長自己匯出寄到信箱的單店檔（10/01–10/25 只有士林）不能當成全公司那幾天都有資料。"""
+        start, end = DAY - timedelta(days=5), DAY - timedelta(days=3)
+        shilin_only = [("2001", 337277, "STUDIO A@士林文林", "iPhone", "蘇 悅", datetime(start.year, start.month, start.day, 10))]
+        r = mm.import_file(make_xlsx(shilin_only), f"Personal Setup_{start}_{end}.xlsx", path=self.db)
+        self.assertFalse(r["company"])
+        self.assertEqual(mm.covered_days(start, end, path=self.db, shop_id="004"), [start, start + timedelta(days=1), end])
+        self.assertEqual(mm.covered_days(start, end, path=self.db, shop_id="068"), [])
+        self.assertEqual(mm.status(path=self.db)["through"], None)      # 還沒有全公司每日檔
+        mm.import_file(make_xlsx(DAILY), DAILY_NAME, path=self.db)
+        self.assertEqual(mm.missing_days(start, DAY, path=self.db, shop_id="068"),
+                         [start, start + timedelta(days=1), end, end + timedelta(days=1), DAY - timedelta(days=1)])
+        self.assertEqual(mm.missing_days(start, DAY, path=self.db, shop_id="004"),
+                         [end + timedelta(days=1), DAY - timedelta(days=1)])
+        self.assertEqual(mm.status(path=self.db)["from"], DAY.isoformat())
+
+    def test_old_archive_without_scope_is_rebuilt(self):
+        import sqlite3
+        con = sqlite3.connect(self.db)
+        con.executescript("""CREATE TABLE files (key TEXT PRIMARY KEY, filename TEXT, date_from TEXT, date_to TEXT, rows INTEGER, imported_at TEXT);
+            INSERT INTO files VALUES ('mail:x','a.xlsx','2026-10-01','2026-10-25',1,'');
+            CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT); INSERT INTO meta VALUES ('last_uid','99');""")
+        con.close()
+        self.assertFalse(mm.has_data(path=self.db))        # 檔案紀錄清掉，下一輪重抓
+        con = sqlite3.connect(self.db)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM meta").fetchone()[0], 0)
+        con.close()
 
     def test_merge_with_upload(self):
         mm.import_file(make_xlsx(DAILY), DAILY_NAME, path=self.db)
@@ -102,7 +132,7 @@ class ArchiveTest(unittest.TestCase):
         mm._connect = lambda mc: fake
         try:
             r = mm.fetch_mail({}, log=lambda m: None, path=self.db)
-            self.assertEqual((r["mails"], r["files"], r["new"], r["dates"]), (1, 1, 4, [DAY.isoformat()]))
+            self.assertEqual((r["mails"], r["files"], r["new"], r["dates"]), (1, 1, 6, [DAY.isoformat()]))
             fake.searches.clear()
             r = mm.fetch_mail({}, log=lambda m: None, path=self.db)   # 第二次只看 UID 12 之後的新信
             self.assertEqual(r["files"], 0)

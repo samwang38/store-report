@@ -435,9 +435,32 @@ def _mysetup_alerts(cfg, st, state):
     state["notified"] = notified
 
 
-def backfill_closing_mysetup(cfg, days):
+def process_mysetup_refill(cfg):
+    """店長在 LINE 改了 MySetup 名稱對照：依存檔把該店閉店網站近兩週重新回填。只有有存檔的 Mac（MBP-Hub）會做。"""
+    import mysetup_mail
+    if not mysetup_mail.has_data():
+        return
+    try:
+        reqs = worker(cfg, "GET", "/api/mac/closing/mysetup-refill")["requests"]
+    except urllib.error.HTTPError as e:
+        if e.code != 404:   # Worker 還沒部署這個 API：略過
+            log(f"取 MySetup 重新回填請求失敗：HTTP {e.code}")
+        return
+    if not reqs:
+        return
+    yesterday = date.today() - timedelta(days=1)
+    for q in reqs:
+        days = [d.isoformat() for d in mysetup_mail.covered_days(
+            yesterday - timedelta(days=MYSETUP_BACKFILL_DAYS - 1), yesterday, shop_id=q["store_id"])]
+        if days and not backfill_closing_mysetup(cfg, days, only=q["store_id"]):
+            continue   # 失敗留到下一輪
+        worker(cfg, "POST", "/api/mac/closing/mysetup-refill/done", q)
+        log(f"門市 {q['store_id']} 名稱對照已更新，閉店網站 MySetup 依新對照重算 {len(days)} 天")
+
+
+def backfill_closing_mysetup(cfg, days, only=None):
     """把存檔裡這幾天每位員工的 MySetup 數寫進閉店網站（mysetup_daily，以 Apple 資料為準）。
-    回傳處理完的日子；EPB 連不上（查不到員工姓名）或 Worker 失敗時留到下一輪。"""
+    只寫存檔有這家店資料的日子（單店匯出檔不會蓋掉別家店）。only：只處理這家門市。回傳處理完的日子；EPB 連不上（查不到員工姓名）或 Worker 失敗時留到下一輪。"""
     import mysetup
     import mysetup_mail
     import server
@@ -456,13 +479,16 @@ def backfill_closing_mysetup(cfg, days):
     done = set(days)
     for st in stores:
         shop = st["store_id"]
-        if not mysetup_mail.apple_ids_of(shop):
+        if (only and shop != only) or not mysetup_mail.apple_ids_of(shop):
             continue
         try:
             emp_names = server.epb_emp_names([p["code"] for p in st.get("staff") or []])
             aliases = {mysetup.normalize(r.get("name")): str(r.get("code") or "").strip()
                        for r in st.get("rules") or [] if mysetup.normalize(r.get("name")) and r.get("code")}
-            for d in days:
+            have = {d.isoformat() for d in mysetup_mail.covered_days(
+                date.fromisoformat(min(days)), date.fromisoformat(max(days)), shop_id=shop)}
+            shop_days = [d for d in days if d in have]
+            for d in shop_days:
                 day = date.fromisoformat(d)
                 recs = mysetup_mail.records_for(shop, day, day)
                 mapping = mysetup.match_names([x["name"] for x in recs], emp_names, aliases)
@@ -470,7 +496,8 @@ def backfill_closing_mysetup(cfg, days):
                 worker(cfg, "POST", "/api/mac/closing/mysetup-auto",
                        {"store_id": shop, "date": d, "counts": counts,
                         "unmatched": [{"name": n, "count": c} for n, c in unmatched.items()]})
-            log(f"門市 {shop} MySetup 閉店網站已回填：{'、'.join(days)}")
+            if shop_days:
+                log(f"門市 {shop} MySetup 閉店網站已回填：{'、'.join(shop_days)}")
         except Exception as e:
             log(f"門市 {shop} MySetup 閉店網站回填失敗：{e}")
             done = set()
@@ -512,6 +539,7 @@ def main():
         process_mycoach(cfg)
         process_jobs(cfg)
         process_mysetup_mail(cfg)
+        process_mysetup_refill(cfg)
         if epb_reachable():
             process_analysis_jobs(cfg)
         # launchd 每 60 秒才啟動一次；這輪剩下的時間每 12 秒再看一次驗證碼信與待測人流帳號，

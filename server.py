@@ -1662,7 +1662,7 @@ def build_report_workbook(payload, log=lambda m: None):
         ms_end = max(dates["wk_end"], dates["mo_end"])
         archived = mysetup_mail.records_for(shop_id, ms_start, ms_end)
         uploaded_range = mysetup_mail.file_range(payload.get("mysetupFileName"), mysetup_records or ())
-        missing = mysetup_mail.missing_days(ms_start, ms_end, also_covered=uploaded_range)
+        missing = mysetup_mail.missing_days(ms_start, ms_end, also_covered=uploaded_range, shop_id=shop_id)
         if mysetup_mail.apple_ids_of(shop_id) and (archived or missing is not None):
             mysetup_records = mysetup_mail.merge_records(mysetup_records, archived, shop_id)
             log(f"MySetup 每日存檔：{len(archived)} 筆，合併後共 {len(mysetup_records)} 筆")

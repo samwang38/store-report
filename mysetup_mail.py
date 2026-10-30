@@ -37,6 +37,7 @@ CONFIG_PATH = HERE / "local_config.json"
 KEEP_DAYS = 400              # 存檔保留天數（月報、年對年都夠用）
 FIRST_BACKFILL_DAYS = 90     # 第一次抓信補抓的天數
 FILE_RE = re.compile(r"personal\s*setup", re.I)
+COMPANY_MIN_STORES = 5       # 檔裡出現幾家以上門市才算「全公司」每日檔；少於這個數是單店自己匯出的檔，只算那幾家有資料
 RANGE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})")
 
 # Apple ID → ERP 門市代碼（依 2026-10-29 全公司檔的 POS Name 對照）。
@@ -86,9 +87,14 @@ def _db(path=None):
           uid TEXT PRIMARY KEY, apple_id TEXT, pos TEXT, name TEXT NOT NULL, device TEXT, submitted TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS records_shop ON records (apple_id, submitted);
         CREATE TABLE IF NOT EXISTS files (          -- 匯入過的檔案；key 是「信的 Message-ID＋檔名」或離線匯入的檔名
-          key TEXT PRIMARY KEY, filename TEXT, date_from TEXT, date_to TEXT, rows INTEGER, imported_at TEXT);
+          key TEXT PRIMARY KEY, filename TEXT, date_from TEXT, date_to TEXT, rows INTEGER, imported_at TEXT,
+          scope TEXT);                              -- 涵蓋的門市：'*'＝全公司，否則是逗號分隔的 Apple ID
         CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
     """)
+    if "scope" not in {r[1] for r in con.execute("PRAGMA table_info(files)")}:
+        # 1.19.1 以前沒分全公司／單店檔：清掉檔案紀錄與抓信進度，下一輪重抓近 90 天重新判斷（筆數以 Unique ID 覆寫，不會重複）
+        con.executescript("ALTER TABLE files ADD COLUMN scope TEXT; DELETE FROM files; DELETE FROM meta;")
+        con.commit()
     return con
 
 
@@ -114,16 +120,18 @@ def import_file(data, filename, key=None, path=None):
                         (uid, r.get("apple_id"), r.get("pos"), r["name"], str(r.get("device") or ""),
                          r["submitted"].isoformat(sep=" ")))
         after = con.execute("SELECT COUNT(*) FROM records").fetchone()[0]
-        con.execute("INSERT OR REPLACE INTO files (key,filename,date_from,date_to,rows,imported_at) VALUES (?,?,?,?,?,?)",
+        aids = sorted({r["apple_id"] for r in records if r.get("apple_id")})
+        scope = "*" if len(aids) >= COMPANY_MIN_STORES else ",".join(aids)
+        con.execute("INSERT OR REPLACE INTO files (key,filename,date_from,date_to,rows,imported_at,scope) VALUES (?,?,?,?,?,?,?)",
                     (key or f"file:{filename}", filename, d_from and d_from.isoformat(), d_to and d_to.isoformat(),
-                     len(records), datetime.now().isoformat(timespec="seconds")))
+                     len(records), datetime.now().isoformat(timespec="seconds"), scope))
         cutoff = (date.today() - timedelta(days=KEEP_DAYS)).isoformat()
         con.execute("DELETE FROM records WHERE submitted < ?", (cutoff,))
         con.execute("DELETE FROM files WHERE date_to < ?", (cutoff,))
         con.commit()
     finally:
         con.close()
-    return {"rows": len(records), "new": after - before, "from": d_from, "to": d_to}
+    return {"rows": len(records), "new": after - before, "from": d_from, "to": d_to, "company": scope == "*"}
 
 
 def has_data(path=None):
@@ -136,9 +144,13 @@ def has_data(path=None):
         con.close()
 
 
-def _covered(con):
+def _covered(con, shop_id=None):
+    """有資料的日子：全公司檔涵蓋所有門市；單店檔只算給檔裡那幾家（shop_id 沒給時只看全公司檔）。"""
+    aids = set(apple_ids_of(shop_id)) if shop_id else set()
     days = set()
-    for d_from, d_to in con.execute("SELECT date_from, date_to FROM files WHERE date_from IS NOT NULL"):
+    for d_from, d_to, scope in con.execute("SELECT date_from, date_to, scope FROM files WHERE date_from IS NOT NULL"):
+        if scope != "*" and not (aids & set((scope or "").split(","))):
+            continue
         d, end = date.fromisoformat(d_from), date.fromisoformat(d_to)
         while d <= end:
             days.add(d)
@@ -146,14 +158,26 @@ def _covered(con):
     return days
 
 
-def missing_days(start, end, path=None, also_covered=None):
-    """start~end 之間（到昨天為止）存檔沒有涵蓋的日子；also_covered=(起, 迄) 是店長上傳檔的日期範圍，
+def covered_days(start, end, path=None, shop_id=None):
+    """start~end 之間存檔有涵蓋（這家店）的日子（有收到信的日子，當天 0 筆也算）。"""
+    if not has_data(path):
+        return []
+    con = _db(path)
+    try:
+        days = _covered(con, shop_id)
+    finally:
+        con.close()
+    return sorted(d for d in days if start <= d <= end)
+
+
+def missing_days(start, end, path=None, also_covered=None, shop_id=None):
+    """start~end 之間（到昨天為止）存檔沒有涵蓋（這家店）的日子；also_covered=(起, 迄) 是店長上傳檔的日期範圍，
     那幾天不算缺。存檔是空的回傳 None。"""
     if not has_data(path):
         return None
     con = _db(path)
     try:
-        days = _covered(con)
+        days = _covered(con, shop_id)
     finally:
         con.close()
     if not days:
@@ -205,9 +229,10 @@ def merge_records(uploaded, archived, shop_id):
 
 
 def status(path=None):
-    """{from, through, missing[], unknown[{apple_id, pos, rows}], files}，給 report_worker 回報 Worker 與通知用。"""
+    """全公司每日檔的 {from, through, missing[], unknown[{apple_id, pos, rows}], files}，給 report_worker 回報 Worker 與通知用。"""
+    empty = {"from": None, "through": None, "missing": [], "unknown": [], "files": 0}
     if not has_data(path):
-        return {"from": None, "through": None, "missing": [], "unknown": [], "files": 0}
+        return empty
     con = _db(path)
     try:
         days = _covered(con)
@@ -217,6 +242,8 @@ def status(path=None):
             if aid and aid not in APPLE_ID_TO_SHOP]
     finally:
         con.close()
+    if not days:   # 只有單店匯出檔、還沒有全公司每日檔
+        return {**empty, "unknown": unknown, "files": nfiles}
     first, last = min(days), max(days)
     missing, d = [], first
     while d < date.today():
