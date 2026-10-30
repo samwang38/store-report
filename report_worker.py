@@ -9,12 +9,13 @@
   2) EPB 連得上才領產報工作：呼叫 server.build_report_excel 產出週報，
      以附件寄給店長並回報結果；失敗時 Worker 會退回次數並推播店長，同時寄信通知 Sam。
   3) MySetup 每日信件（每小時一次；收信帳密用 mysetupMail，沒有就沿用 smtp）：抓 Sam 信箱的全公司 Personal Setup 檔
-     存進本機存檔（mysetup_mail.py），產週報時自動帶入；並回填閉店網站前一天每人 MySetup 數。
+     存進本機存檔（mysetup_mail.py），產週報時自動帶入；有設定 scheduleSystem 就把每人每日每裝置數推到排班系統「我的業績」。
 
 設定（local_config.json）：
   "smtp":         由 smtp_test.py 測試成功後存入（host/port/username/password/from）
   "reportWeekly": {"workerUrl": "...", "macSecret": "..."}
   "mysetupMail":  {"username": "...", "password": "...", "host": "studioa.com.tw", "port": 143}（選填，沒有就用 smtp 帳密收信）
+  "scheduleSystem": {"url": "https://...", "agentToken": "<agent_id>.<secret>"}（選填，排班系統後台建立的同步代理）
 
 手動測試（不經 Worker，直接產一份寄出）：
   python3 report_worker.py --local 004 2026-10-10 收件人@studioa.com.tw [編制人數]
@@ -48,7 +49,7 @@ MYSETUP_MAIL_INTERVAL_SEC = 3600       # 每小時抓一次 MySetup 每日信
 MYSETUP_MAIL_STAMP = HERE / ".last_mysetup_mail"
 MYSETUP_STATE = HERE / ".mysetup_mail_state.json"   # 待回填閉店網站的日子、今天通知過什麼
 MYSETUP_ALERT_HOUR = 12                # 到中午還沒收到前一天的信就通知 Sam
-MYSETUP_BACKFILL_DAYS = 14             # 閉店網站只回填近兩週
+MYSETUP_PUSH_DAYS = 45                 # 推排班系統的天數（涵蓋本月；第一次設定、改名稱對照時重推這麼多天）
 
 
 def log(msg):
@@ -372,7 +373,7 @@ def _mysetup_state():
 
 
 def process_mysetup_mail(cfg, min_interval=MYSETUP_MAIL_INTERVAL_SEC):
-    """抓 Sam 信箱的 Personal Setup 每日信（全公司、前一天）→ 本機存檔 → 回報 Worker 狀態 → 回填閉店網站。
+    """抓 Sam 信箱的 Personal Setup 每日信（全公司、前一天）→ 本機存檔 → 回報 Worker 狀態 → 推排班系統。
     收信帳密見 mysetup_mail.mail_config；都沒有就什麼都不做。"""
     import mysetup_mail
     mc = mysetup_mail.mail_config(cfg)
@@ -385,13 +386,16 @@ def process_mysetup_mail(cfg, min_interval=MYSETUP_MAIL_INTERVAL_SEC):
         pass
     MYSETUP_MAIL_STAMP.write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
     state = _mysetup_state()
-    pending = set(state.get("backfill") or [])
+    pending = set(state.get("push") or [])
+    oldest = date.today() - timedelta(days=MYSETUP_PUSH_DAYS)
+    if _schedule_cfg(cfg) and not state.get("schedule_initial_push"):   # 剛設定排班系統：先補推近 45 天
+        pending |= {d.isoformat() for d in mysetup_mail.covered_days(oldest, date.today())}
+        state["schedule_initial_push"] = date.today().isoformat()
     try:
         r = mysetup_mail.fetch_mail(mc, log=log)
         if r["files"]:
             log(f"MySetup 每日信：匯入 {r['files']} 個檔，新增 {r['new']} 筆")
-        oldest = (date.today() - timedelta(days=MYSETUP_BACKFILL_DAYS)).isoformat()
-        pending |= {d for d in r["dates"] if d >= oldest}
+        pending |= {d for d in r["dates"] if d >= oldest.isoformat()}
     except Exception as e:
         log(f"MySetup 抓信失敗：{e}")
     st = mysetup_mail.status()
@@ -404,9 +408,13 @@ def process_mysetup_mail(cfg, min_interval=MYSETUP_MAIL_INTERVAL_SEC):
             log(f"回報 MySetup 存檔狀態失敗：HTTP {e.code}")
     except Exception as e:
         log(f"回報 MySetup 存檔狀態失敗：{e}")
-    if pending:
-        pending -= backfill_closing_mysetup(cfg, sorted(pending))
-    state["backfill"] = sorted(pending)
+    if not _schedule_cfg(cfg):
+        pending = set()
+    elif pending and push_mysetup_schedule(cfg, sorted(set(mysetup_mail.APPLE_ID_TO_SHOP.values())),
+                                           date.fromisoformat(min(pending)), date.fromisoformat(max(pending))):
+        pending = set()
+    state.pop("backfill", None)
+    state["push"] = sorted(pending)
     _mysetup_alerts(cfg, st, state)
     MYSETUP_STATE.write_text(json.dumps(state, ensure_ascii=False), "utf-8")
 
@@ -436,72 +444,69 @@ def _mysetup_alerts(cfg, st, state):
 
 
 def process_mysetup_refill(cfg):
-    """店長在 LINE 改了 MySetup 名稱對照：依存檔把該店閉店網站近兩週重新回填。只有有存檔的 Mac（MBP-Hub）會做。"""
+    """店長在 LINE 改了 MySetup 名稱對照：依存檔把該店近 45 天重推到排班系統。只有有存檔的 Mac（MBP-Hub）會做。"""
     import mysetup_mail
     if not mysetup_mail.has_data():
         return
     try:
-        reqs = worker(cfg, "GET", "/api/mac/closing/mysetup-refill")["requests"]
+        reqs = worker(cfg, "GET", "/api/mac/mysetup/refill")["requests"]
     except urllib.error.HTTPError as e:
         if e.code != 404:   # Worker 還沒部署這個 API：略過
-            log(f"取 MySetup 重新回填請求失敗：HTTP {e.code}")
-        return
-    if not reqs:
+            log(f"取 MySetup 重算請求失敗：HTTP {e.code}")
         return
     yesterday = date.today() - timedelta(days=1)
     for q in reqs:
-        days = [d.isoformat() for d in mysetup_mail.covered_days(
-            yesterday - timedelta(days=MYSETUP_BACKFILL_DAYS - 1), yesterday, shop_id=q["store_id"])]
-        if days and not backfill_closing_mysetup(cfg, days, only=q["store_id"]):
+        if not push_mysetup_schedule(cfg, [q["store_id"]], yesterday - timedelta(days=MYSETUP_PUSH_DAYS - 1), yesterday):
             continue   # 失敗留到下一輪
-        worker(cfg, "POST", "/api/mac/closing/mysetup-refill/done", q)
-        log(f"門市 {q['store_id']} 名稱對照已更新，閉店網站 MySetup 依新對照重算 {len(days)} 天")
+        worker(cfg, "POST", "/api/mac/mysetup/refill/done", q)
+        log(f"門市 {q['store_id']} 名稱對照已更新，排班系統 MySetup 依新對照重算")
 
 
-def backfill_closing_mysetup(cfg, days, only=None):
-    """把存檔裡這幾天每位員工的 MySetup 數寫進閉店網站（mysetup_daily，以 Apple 資料為準）。
-    只寫存檔有這家店資料的日子（單店匯出檔不會蓋掉別家店）。only：只處理這家門市。回傳處理完的日子；EPB 連不上（查不到員工姓名）或 Worker 失敗時留到下一輪。"""
-    import mysetup
-    import mysetup_mail
-    import server
-    try:
-        stores = worker(cfg, "GET", "/api/mac/closing/mysetup-targets")["stores"]
-    except urllib.error.HTTPError as e:
-        if e.code != 404:
-            log(f"取閉店網站門市失敗：HTTP {e.code}")
-        return set()
-    except Exception as e:
-        log(f"取閉店網站門市失敗：{e}")
-        return set()
+def _schedule_cfg(cfg):
+    ss = cfg.get("scheduleSystem") or {}
+    return ss if ss.get("url") and ss.get("agentToken") else None
+
+
+def _schedule_post(ss, path, body):
+    req = urllib.request.Request(
+        ss["url"].rstrip("/") + path, method="POST", data=json.dumps(body).encode(),
+        headers={"authorization": f"Bearer {ss['agentToken']}", "content-type": "application/json",
+                 "user-agent": "report-weekly-mac/1.0"})
+    with urllib.request.urlopen(req, timeout=60) as res:
+        return json.loads(res.read().decode())
+
+
+def push_mysetup_schedule(cfg, shops, start, end):
+    """把 start~end 各店每人每日每裝置的 MySetup 推到排班系統「我的業績」（/api/sales/mysetup-sync）。
+    每店依存檔有資料的連續區間整段覆寫（沒收到信的日子不碰）。沒設定 scheduleSystem 視為成功；失敗回 False 留到下一輪。"""
+    ss = _schedule_cfg(cfg)
+    if not ss:
+        return True
     if not epb_reachable():
-        log("EPB 連不上，MySetup 閉店網站回填留到下一輪")
-        return set()
-    done = set(days)
-    for st in stores:
-        shop = st["store_id"]
-        if (only and shop != only) or not mysetup_mail.apple_ids_of(shop):
-            continue
-        try:
-            emp_names = server.epb_emp_names([p["code"] for p in st.get("staff") or []])
-            aliases = {mysetup.normalize(r.get("name")): str(r.get("code") or "").strip()
-                       for r in st.get("rules") or [] if mysetup.normalize(r.get("name")) and r.get("code")}
-            have = {d.isoformat() for d in mysetup_mail.covered_days(
-                date.fromisoformat(min(days)), date.fromisoformat(max(days)), shop_id=shop)}
-            shop_days = [d for d in days if d in have]
-            for d in shop_days:
-                day = date.fromisoformat(d)
-                recs = mysetup_mail.records_for(shop, day, day)
-                mapping = mysetup.match_names([x["name"] for x in recs], emp_names, aliases)
-                counts, unmatched, _ = mysetup.summarize(recs, mapping, day, day)
-                worker(cfg, "POST", "/api/mac/closing/mysetup-auto",
-                       {"store_id": shop, "date": d, "counts": counts,
-                        "unmatched": [{"name": n, "count": c} for n, c in unmatched.items()]})
-            if shop_days:
-                log(f"門市 {shop} MySetup 閉店網站已回填：{'、'.join(shop_days)}")
-        except Exception as e:
-            log(f"門市 {shop} MySetup 閉店網站回填失敗：{e}")
-            done = set()
-    return done
+        log("EPB 連不上（查不到員工姓名），排班系統 MySetup 留到下一輪")
+        return False
+    import mysetup_daily
+    import mysetup_mail
+    try:
+        rules = worker(cfg, "GET", "/api/mac/mysetup/rules")["rules"]
+        data = mysetup_daily.daily_counts(shops, start, end, rules)
+    except Exception as e:
+        log(f"排班系統 MySetup 計算失敗：{e}")
+        return False
+    ok, sent = True, 0
+    for shop, per_day in data["counts"].items():
+        for d_from, d_to in mysetup_mail._ranges(date.fromisoformat(d) for d in per_day):
+            records = [{"employee_id": code, "day": day, "counts": {k.lower(): n for k, n in devs.items()}}
+                       for day, people in per_day.items() if d_from <= day <= d_to for code, devs in people.items()]
+            try:
+                _schedule_post(ss, "/api/sales/mysetup-sync",
+                               {"store_code": shop, "range_start": d_from, "range_end": d_to, "records": records})
+                sent += len(records)
+            except Exception as e:
+                log(f"門市 {shop} 排班系統 MySetup 上傳失敗：{e}")
+                ok = False
+    log(f"排班系統 MySetup：{len(data['counts'])} 家店 {start:%m/%d}–{end:%m/%d}，{sent} 筆" + ("" if ok else "（有失敗，下一輪重試）"))
+    return ok
 
 
 def process_analysis_jobs(cfg):

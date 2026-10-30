@@ -59,7 +59,9 @@ Sam 的公司信箱每天收到前一天「全公司」的 Personal Setup 匯出
 （只存 Unique ID、Apple ID、POS Name、Staff Name、Device、提交時間，不存客人資料；保留約 400 天）。
 
 - 產週報：本店存檔資料與店長上傳的檔以 Unique ID 合併去重；期間內缺信的日子寫在 log，並在週報信裡提醒店長。
-- 閉店網站：匯入後把前一天每位員工的筆數寫進「MySetup 填寫」（以 Apple 資料為準、整天覆寫），名字對照沿用店長在 LINE 設的規則。
+- 日報信：自動日報程式（daily-report-mac）用 `mysetup_daily.py` 算本週／本月每人每裝置的提交率，附在日報信內文。
+- 排班系統「我的業績」：有設定 `scheduleSystem` 時，匯入新資料後把每人每日每裝置數推到 `/api/sales/mysetup-sync`（第一次設定補推近 45 天；店長在 LINE 改名稱對照時重推該店近 45 天）。名字對照都沿用店長在 LINE 設的規則。
+- 閉店網站的「MySetup 填寫／週進度」2026-10-30 停用，不再回填。
 - 到中午還沒收到前一天的信、或出現 `APPLE_ID_TO_SHOP` 沒有的 Apple ID，會寄信通知 Sam。新門市要把 Apple ID 補進對照表。
 
 收信預設沿用 `local_config.json` 的 `smtp` 帳密（寄件帳號就是 Sam 的公司信箱），不用另外設定。要改用別的信箱或指定信件匣、主旨時，再在 MBP-Hub 的 `local_config.json` 加（帳密不進版控）：
@@ -68,7 +70,15 @@ Sam 的公司信箱每天收到前一天「全公司」的 Personal Setup 匯出
 "mysetupMail": {"username": "...@studioa.com.tw", "password": "...", "host": "studioa.com.tw", "port": 143, "folder": "INBOX", "subject": ""}
 ```
 
-`subject` 留空時檢查每封新信的附檔名；有填就只看主旨含這段文字的信。手動指令：
+`subject` 留空時檢查每封新信的附檔名；有填就只看主旨含這段文字的信。
+
+推排班系統要在 MBP-Hub 的 `local_config.json` 加（token 在排班系統後台「業績同步代理」新增一台取得，只顯示一次）：
+
+```json
+"scheduleSystem": {"url": "https://排班系統網址", "agentToken": "<agent_id>.<secret>"}
+```
+
+手動指令：
 
 ```bash
 venv/bin/python mysetup_mail.py --once        # 抓信一次（第一次補抓近 90 天）
