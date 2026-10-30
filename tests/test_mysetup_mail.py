@@ -58,7 +58,7 @@ class ArchiveTest(unittest.TestCase):
 
     def test_import_dedupes_and_splits_by_store(self):
         r = mm.import_file(make_xlsx(DAILY), DAILY_NAME, path=self.db)
-        self.assertEqual((r["rows"], r["new"], r["from"], r["to"], r["company"]), (6, 6, DAY, DAY, True))
+        self.assertEqual((r["rows"], r["new"], r["from"], r["to"], r["company"]), (6, 5, DAY, DAY, True))   # 彩虹那筆不存
         self.assertEqual(mm.import_file(make_xlsx(DAILY), DAILY_NAME, path=self.db)["new"], 0)
         shilin = mm.records_for("004", DAY, DAY, path=self.db)
         self.assertEqual(sorted(x["uid"] for x in shilin), ["1001", "1002"])
@@ -72,7 +72,7 @@ class ArchiveTest(unittest.TestCase):
         st = mm.status(path=self.db)
         self.assertEqual((st["from"], st["through"]), (DAY.isoformat(), DAY.isoformat()))
         self.assertEqual(st["missing"], [(DAY + timedelta(days=1)).isoformat()])   # 昨天的信還沒到
-        self.assertEqual([u["apple_id"] for u in st["unknown"]], ["544641"])
+        self.assertEqual(st["unknown"], [])                         # 台中彩虹 3C 店寫死排除，不算對不上
         start = DAY - timedelta(days=2)
         self.assertEqual(mm.missing_days(start, DAY + timedelta(days=5), path=self.db),
                          [start, DAY - timedelta(days=1), DAY + timedelta(days=1)])
@@ -132,7 +132,7 @@ class ArchiveTest(unittest.TestCase):
         mm._connect = lambda mc: fake
         try:
             r = mm.fetch_mail({}, log=lambda m: None, path=self.db)
-            self.assertEqual((r["mails"], r["files"], r["new"], r["dates"]), (1, 1, 6, [DAY.isoformat()]))
+            self.assertEqual((r["mails"], r["files"], r["new"], r["dates"]), (1, 1, 5, [DAY.isoformat()]))
             fake.searches.clear()
             r = mm.fetch_mail({}, log=lambda m: None, path=self.db)   # 第二次只看 UID 12 之後的新信
             self.assertEqual(r["files"], 0)

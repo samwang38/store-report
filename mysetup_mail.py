@@ -69,6 +69,11 @@ APPLE_ID_TO_SHOP = {
     "3842054": "068",  # STUDIOA@新店裕隆城
 }
 
+# 不納入的門市（Sam 2026-10-30 決定）：不存資料、不列為對不上的門市
+EXCLUDED_APPLE_IDS = {
+    "544641",   # STUDIO A@台中彩虹3C店
+}
+
 
 def apple_ids_of(shop_id):
     shop_id = str(shop_id or "").strip()
@@ -113,8 +118,13 @@ def import_file(data, filename, key=None, path=None):
     d_from, d_to = file_range(filename, records)
     con = _db(path)
     try:
+        if EXCLUDED_APPLE_IDS:
+            con.execute(f"DELETE FROM records WHERE apple_id IN ({','.join('?' * len(EXCLUDED_APPLE_IDS))})",
+                        tuple(EXCLUDED_APPLE_IDS))
         before = con.execute("SELECT COUNT(*) FROM records").fetchone()[0]
         for r in records:
+            if r.get("apple_id") in EXCLUDED_APPLE_IDS:
+                continue
             uid = r["uid"] or f"{r['apple_id']}|{r['name']}|{r['submitted'].isoformat()}"
             con.execute("INSERT OR REPLACE INTO records (uid,apple_id,pos,name,device,submitted) VALUES (?,?,?,?,?,?)",
                         (uid, r.get("apple_id"), r.get("pos"), r["name"], str(r.get("device") or ""),
@@ -239,7 +249,7 @@ def status(path=None):
         nfiles = con.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         unknown = [{"apple_id": aid, "pos": pos, "rows": n} for aid, pos, n in con.execute(
             "SELECT apple_id, MAX(pos), COUNT(*) FROM records GROUP BY apple_id ORDER BY apple_id")
-            if aid and aid not in APPLE_ID_TO_SHOP]
+            if aid and aid not in APPLE_ID_TO_SHOP and aid not in EXCLUDED_APPLE_IDS]
     finally:
         con.close()
     if not days:   # 只有單店匯出檔、還沒有全公司每日檔
