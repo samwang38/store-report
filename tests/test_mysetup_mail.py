@@ -93,7 +93,13 @@ class ArchiveTest(unittest.TestCase):
                          [start, start + timedelta(days=1), end, end + timedelta(days=1), DAY - timedelta(days=1)])
         self.assertEqual(mm.missing_days(start, DAY, path=self.db, shop_id="004"),
                          [end + timedelta(days=1), DAY - timedelta(days=1)])
-        self.assertEqual(mm.status(path=self.db)["from"], DAY.isoformat())
+        st = mm.status(path=self.db)
+        self.assertEqual(st["from"], DAY.isoformat())
+        # 士林有單店匯出檔：兩段；裕隆城只有全公司那天；其他店也只有那天
+        self.assertEqual(st["coverage"]["004"], [[start.isoformat(), end.isoformat()], [DAY.isoformat(), DAY.isoformat()]])
+        self.assertEqual(st["coverage"]["068"], [[DAY.isoformat(), DAY.isoformat()]])
+        mm.import_file(make_xlsx(DAILY), f"Personal Setup_{end + timedelta(days=1)}_{DAY - timedelta(days=1)}.xlsx", path=self.db)
+        self.assertEqual(mm.status(path=self.db)["coverage"]["004"], [[start.isoformat(), DAY.isoformat()]])   # 連續就合成一段
 
     def test_old_archive_without_scope_is_rebuilt(self):
         import sqlite3

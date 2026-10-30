@@ -35,6 +35,7 @@ HERE = Path(__file__).resolve().parent
 ARCHIVE_PATH = HERE / "mysetup_archive.sqlite"
 CONFIG_PATH = HERE / "local_config.json"
 KEEP_DAYS = 400              # 存檔保留天數（月報、年對年都夠用）
+COVERAGE_DAYS = 70           # 回報 Worker 各店有資料的日期區間，只看近 70 天（產出頁判斷這份週報缺哪幾天）
 FIRST_BACKFILL_DAYS = 90     # 第一次抓信補抓的天數
 FILE_RE = re.compile(r"personal\s*setup", re.I)
 COMPANY_MIN_STORES = 5       # 檔裡出現幾家以上門市才算「全公司」每日檔；少於這個數是單店自己匯出的檔，只算那幾家有資料
@@ -238,14 +239,32 @@ def merge_records(uploaded, archived, shop_id):
     return out
 
 
+def _ranges(days):
+    """連續的日子壓成 [[起, 迄], ...]（ISO 字串）。"""
+    out = []
+    for d in sorted(days):
+        if out and date.fromisoformat(out[-1][1]) + timedelta(days=1) == d:
+            out[-1][1] = d.isoformat()
+        else:
+            out.append([d.isoformat(), d.isoformat()])
+    return out
+
+
 def status(path=None):
-    """全公司每日檔的 {from, through, missing[], unknown[{apple_id, pos, rows}], files}，給 report_worker 回報 Worker 與通知用。"""
-    empty = {"from": None, "through": None, "missing": [], "unknown": [], "files": 0}
+    """全公司每日檔的 {from, through, missing[], unknown[{apple_id, pos, rows}], files}，
+    加上 coverage {門市代碼: [[起, 迄], ...]}（近 70 天各店有資料的日子，含單店匯出檔），給 report_worker 回報 Worker 與通知用。"""
+    empty = {"from": None, "through": None, "missing": [], "unknown": [], "files": 0, "coverage": {}}
     if not has_data(path):
         return empty
     con = _db(path)
     try:
         days = _covered(con)
+        since = date.today() - timedelta(days=COVERAGE_DAYS)
+        coverage = {}
+        for shop in sorted(set(APPLE_ID_TO_SHOP.values())):
+            r = _ranges(d for d in _covered(con, shop) if d >= since)
+            if r:
+                coverage[shop] = r
         nfiles = con.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         unknown = [{"apple_id": aid, "pos": pos, "rows": n} for aid, pos, n in con.execute(
             "SELECT apple_id, MAX(pos), COUNT(*) FROM records GROUP BY apple_id ORDER BY apple_id")
@@ -253,7 +272,7 @@ def status(path=None):
     finally:
         con.close()
     if not days:   # 只有單店匯出檔、還沒有全公司每日檔
-        return {**empty, "unknown": unknown, "files": nfiles}
+        return {**empty, "unknown": unknown, "files": nfiles, "coverage": coverage}
     first, last = min(days), max(days)
     missing, d = [], first
     while d < date.today():
@@ -261,7 +280,7 @@ def status(path=None):
             missing.append(d.isoformat())
         d += timedelta(days=1)
     return {"from": first.isoformat(), "through": last.isoformat(), "missing": missing[-31:],
-            "unknown": unknown, "files": nfiles}
+            "unknown": unknown, "files": nfiles, "coverage": coverage}
 
 
 # ─── IMAP 抓信（寫法同自動日報 daily_job.imap_connect）──────────────────────
