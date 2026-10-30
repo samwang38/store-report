@@ -359,7 +359,7 @@ def fetch_mail(mc, days=None, log=print, path=None):
                 continue
             msg = email.message_from_bytes(_first_literal(body), policy=policy.default)
             hit = False
-            for part in msg.iter_attachments():
+            for part in msg.walk():   # 不能用 iter_attachments：Mac 郵件會把附件包在 alternative 裡面一層
                 fn = Path(part.get_filename() or "").name
                 if not (fn.lower().endswith(".xlsx") and FILE_RE.search(fn)):
                     continue

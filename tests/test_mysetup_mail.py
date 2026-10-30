@@ -133,18 +133,27 @@ class ArchiveTest(unittest.TestCase):
         other = EmailMessage()
         other["Subject"], other["Message-ID"] = "午餐", "<b2@test>"
         other.set_content("沒有附件")
-        fake = FakeImap({11: msg.as_bytes(), 12: other.as_bytes()})
+        nested = EmailMessage()   # Mac 郵件：附件包在 multipart/alternative 裡（檔名不同、內容相同 → 不新增筆數）
+        nested["Subject"], nested["Message-ID"] = "Personal Setup_x", "<c3@test>"
+        nested.set_content("附件")
+        html = EmailMessage()
+        html.set_content("<p>附件</p>", subtype="html")
+        html.add_attachment(make_xlsx(DAILY), maintype="application",
+                            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename="Personal Setup_nested.xlsx")
+        nested.make_alternative()
+        nested.attach(html)
+        fake = FakeImap({11: msg.as_bytes(), 12: other.as_bytes(), 13: nested.as_bytes()})
         orig = mm._connect
         mm._connect = lambda mc: fake
         try:
             r = mm.fetch_mail({}, log=lambda m: None, path=self.db)
-            self.assertEqual((r["mails"], r["files"], r["new"], r["dates"]), (1, 1, 5, [DAY.isoformat()]))
+            self.assertEqual((r["mails"], r["files"], r["new"], r["dates"]), (2, 2, 5, [DAY.isoformat()]))
             fake.searches.clear()
             r = mm.fetch_mail({}, log=lambda m: None, path=self.db)   # 第二次只看 UID 12 之後的新信
             self.assertEqual(r["files"], 0)
-            self.assertEqual(fake.searches, [("UID", "13:*")])
+            self.assertEqual(fake.searches, [("UID", "14:*")])
             r = mm.fetch_mail({}, days=3, log=lambda m: None, path=self.db)   # 指定補抓：同一封不重複匯入
-            self.assertEqual((r["mails"], r["files"]), (1, 0))
+            self.assertEqual((r["mails"], r["files"]), (2, 0))
         finally:
             mm._connect = orig
 
