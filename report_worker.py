@@ -8,13 +8,13 @@
   1) 向 Worker 拉待寄信件（綁定驗證碼等），用公司 SMTP 寄出並回報。
   2) EPB 連得上才領產報工作：呼叫 server.build_report_excel 產出週報，
      以附件寄給店長並回報結果；失敗時 Worker 會退回次數並推播店長，同時寄信通知 Sam。
-  3) MySetup 每日信件（有設定 mysetupMail 才做，每小時一次）：抓 Sam 信箱的全公司 Personal Setup 檔
+  3) MySetup 每日信件（每小時一次；收信帳密用 mysetupMail，沒有就沿用 smtp）：抓 Sam 信箱的全公司 Personal Setup 檔
      存進本機存檔（mysetup_mail.py），產週報時自動帶入；並回填閉店網站前一天每人 MySetup 數。
 
 設定（local_config.json）：
   "smtp":         由 smtp_test.py 測試成功後存入（host/port/username/password/from）
   "reportWeekly": {"workerUrl": "...", "macSecret": "..."}
-  "mysetupMail":  {"username": "...", "password": "...", "host": "studioa.com.tw", "port": 143}（只設在 MBP-Hub）
+  "mysetupMail":  {"username": "...", "password": "...", "host": "studioa.com.tw", "port": 143}（選填，沒有就用 smtp 帳密收信）
 
 手動測試（不經 Worker，直接產一份寄出）：
   python3 report_worker.py --local 004 2026-10-10 收件人@studioa.com.tw [編制人數]
@@ -373,9 +373,10 @@ def _mysetup_state():
 
 def process_mysetup_mail(cfg, min_interval=MYSETUP_MAIL_INTERVAL_SEC):
     """抓 Sam 信箱的 Personal Setup 每日信（全公司、前一天）→ 本機存檔 → 回報 Worker 狀態 → 回填閉店網站。
-    沒設定 mysetupMail 的 Mac 什麼都不做。"""
-    mc = cfg.get("mysetupMail") or {}
-    if not (mc.get("username") and mc.get("password")):
+    收信帳密見 mysetup_mail.mail_config；都沒有就什麼都不做。"""
+    import mysetup_mail
+    mc = mysetup_mail.mail_config(cfg)
+    if not mc:
         return
     try:
         if time.time() - MYSETUP_MAIL_STAMP.stat().st_mtime < min_interval:
@@ -383,7 +384,6 @@ def process_mysetup_mail(cfg, min_interval=MYSETUP_MAIL_INTERVAL_SEC):
     except OSError:
         pass
     MYSETUP_MAIL_STAMP.write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
-    import mysetup_mail
     state = _mysetup_state()
     pending = set(state.get("backfill") or [])
     try:

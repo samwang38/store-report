@@ -10,6 +10,7 @@ MySetup 每日信件匯入：Sam 的公司信箱每天收到前一天「全公�
   "mysetupMail": {"username": "...@studioa.com.tw", "password": "...",
                   "host": "studioa.com.tw", "port": 143, "folder": "INBOX", "subject": ""}
   subject 留空時檢查每封新信的附檔名；有填就只看主旨含這段文字的信。
+  沒有 mysetupMail 時沿用 "smtp" 的帳密（寄件帳號就是 Sam 的公司信箱，同一台郵件主機收信）。
 
 手動：
   python mysetup_mail.py --file <xlsx> [...]   離線匯入檔案（測試、補資料）
@@ -347,13 +348,22 @@ def _first_literal(data):
     return b""
 
 
+def mail_config(cfg):
+    """收信設定：mysetupMail 有帳密就用它，沒有就沿用 smtp 的帳密與主機（IMAP 走 143）。"""
+    mc = cfg.get("mysetupMail") or {}
+    if mc.get("username") and mc.get("password"):
+        return mc
+    sm = cfg.get("smtp") or {}
+    if sm.get("username") and sm.get("password"):
+        return {**mc, "username": sm["username"], "password": sm["password"], "host": mc.get("host") or sm.get("host")}
+    return None
+
+
 def load_mail_config():
     try:
-        cfg = json.loads(CONFIG_PATH.read_text("utf-8"))
+        return mail_config(json.loads(CONFIG_PATH.read_text("utf-8")))
     except Exception:
         return None
-    mc = cfg.get("mysetupMail") or {}
-    return mc if mc.get("username") and mc.get("password") else None
 
 
 def main():
@@ -371,7 +381,7 @@ def main():
     if a.once:
         mc = load_mail_config()
         if not mc:
-            sys.exit("local_config.json 沒有 mysetupMail 帳密")
+            sys.exit("local_config.json 沒有 mysetupMail 或 smtp 帳密")
         print(fetch_mail(mc, days=a.days))
     if a.status or not (a.file or a.once):
         print(json.dumps(status(), ensure_ascii=False, indent=2))

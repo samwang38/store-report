@@ -62,7 +62,7 @@ Sam 的公司信箱每天收到前一天「全公司」的 Personal Setup 匯出
 - 閉店網站：匯入後把前一天每位員工的筆數寫進「MySetup 填寫」（以 Apple 資料為準、整天覆寫），名字對照沿用店長在 LINE 設的規則。
 - 到中午還沒收到前一天的信、或出現 `APPLE_ID_TO_SHOP` 沒有的 Apple ID，會寄信通知 Sam。新門市要把 Apple ID 補進對照表。
 
-只在 MBP-Hub 的 `local_config.json` 加（帳密不進版控）：
+收信預設沿用 `local_config.json` 的 `smtp` 帳密（寄件帳號就是 Sam 的公司信箱），不用另外設定。要改用別的信箱或指定信件匣、主旨時，再在 MBP-Hub 的 `local_config.json` 加（帳密不進版控）：
 
 ```json
 "mysetupMail": {"username": "...@studioa.com.tw", "password": "...", "host": "studioa.com.tw", "port": 143, "folder": "INBOX", "subject": ""}
