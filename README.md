@@ -51,3 +51,27 @@ PORT=8899 python3 server.py  # 自訂 port
 
 DSS（搭售統計，Sheet 10/11）：登入需圖形驗證碼、不定時 Email 二次認證，
 故採前端互動式登入；登入後 session 存於 local_config.json，重啟可續用。
+
+## MySetup 每日信件自動匯入（第 13/14 頁）
+
+Sam 的公司信箱每天收到前一天「全公司」的 Personal Setup 匯出檔（附檔 `Personal Setup_起_迄.xlsx`），只有這個信箱收得到，所有門市共用。
+常開的 MBP-Hub 由 `report_worker.py` 每小時用 IMAP 抓一次（`mysetup_mail.py`），依每列的 Apple ID 分店存進本機 `mysetup_archive.sqlite`
+（只存 Unique ID、Apple ID、POS Name、Staff Name、Device、提交時間，不存客人資料；保留約 400 天）。
+
+- 產週報：本店存檔資料與店長上傳的檔以 Unique ID 合併去重；期間內缺信的日子寫在 log，並在週報信裡提醒店長。
+- 閉店網站：匯入後把前一天每位員工的筆數寫進「MySetup 填寫」（以 Apple 資料為準、整天覆寫），名字對照沿用店長在 LINE 設的規則。
+- 到中午還沒收到前一天的信、或出現 `APPLE_ID_TO_SHOP` 沒有的 Apple ID，會寄信通知 Sam。新門市要把 Apple ID 補進對照表。
+
+只在 MBP-Hub 的 `local_config.json` 加（帳密不進版控）：
+
+```json
+"mysetupMail": {"username": "...@studioa.com.tw", "password": "...", "host": "studioa.com.tw", "port": 143, "folder": "INBOX", "subject": ""}
+```
+
+`subject` 留空時檢查每封新信的附檔名；有填就只看主旨含這段文字的信。手動指令：
+
+```bash
+venv/bin/python mysetup_mail.py --once        # 抓信一次（第一次補抓近 90 天）
+venv/bin/python mysetup_mail.py --status      # 存檔涵蓋日期、缺的日子、對不上的 Apple ID
+venv/bin/python mysetup_mail.py --file 檔案.xlsx   # 離線匯入
+```

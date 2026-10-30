@@ -38,6 +38,7 @@ except Exception as _exc:  # 缺套件等情況下仍讓 server 正常啟動
 
 import mycoach_client
 import mysetup
+import mysetup_mail
 
 try:
     import dss_client as dss_mod
@@ -1654,6 +1655,22 @@ def build_report_workbook(payload, log=lambda m: None):
             log(f"讀取 Personal Setup Excel：{len(mysetup_records)} 筆")
         except Exception as exc:  # 檔案有問題不擋產報，MySetup 欄留空
             log(f"  ⚠ Personal Setup Excel 無法讀取，MySetup 欄留空：{exc}")
+    # 每日信件存檔（MBP-Hub 匯入的全公司 Personal Setup）：與上傳檔以 Unique ID 合併去重
+    ms_missing = []
+    try:
+        ms_start = min(dates["wk_start"], dates["mo_start"])
+        ms_end = max(dates["wk_end"], dates["mo_end"])
+        archived = mysetup_mail.records_for(shop_id, ms_start, ms_end)
+        uploaded_range = mysetup_mail.file_range(payload.get("mysetupFileName"), mysetup_records or ())
+        missing = mysetup_mail.missing_days(ms_start, ms_end, also_covered=uploaded_range)
+        if mysetup_mail.apple_ids_of(shop_id) and (archived or missing is not None):
+            mysetup_records = mysetup_mail.merge_records(mysetup_records, archived, shop_id)
+            log(f"MySetup 每日存檔：{len(archived)} 筆，合併後共 {len(mysetup_records)} 筆")
+            if missing:
+                ms_missing = [d.isoformat() for d in missing]
+                log("  ⚠ MySetup 每日存檔缺這幾天的信：" + "、".join(f"{d:%m/%d}" for d in missing))
+    except Exception as exc:  # 存檔有問題不擋產報，照舊只用上傳檔
+        log(f"  ⚠ MySetup 每日存檔讀取失敗，只用上傳檔：{exc}")
     wb = openpyxl.load_workbook(TEMPLATE_PATH)
     validate_template_sheet_order(wb)
     template_employees = engine.load_employees(wb) or engine.EMPLOYEES
@@ -1778,6 +1795,7 @@ def build_report_workbook(payload, log=lambda m: None):
             "unmatched": [{"name": n, "count": c} for n, c in sorted(unmatched.items(), key=lambda x: -x[1])],
             "employees": ms_employees,   # 週報小幫手設定對照時的下拉選項
             "week": ms_week,             # 本週每人 MySetup 數 {week_start, counts, unmatched}
+            "missing": ms_missing,       # 每日存檔缺信的日子（產報期間內），信裡提醒店長
         }
 
     mc_session = mycoach_client.current_session()

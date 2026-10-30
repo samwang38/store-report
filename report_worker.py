@@ -8,10 +8,13 @@
   1) 向 Worker 拉待寄信件（綁定驗證碼等），用公司 SMTP 寄出並回報。
   2) EPB 連得上才領產報工作：呼叫 server.build_report_excel 產出週報，
      以附件寄給店長並回報結果；失敗時 Worker 會退回次數並推播店長，同時寄信通知 Sam。
+  3) MySetup 每日信件（有設定 mysetupMail 才做，每小時一次）：抓 Sam 信箱的全公司 Personal Setup 檔
+     存進本機存檔（mysetup_mail.py），產週報時自動帶入；並回填閉店網站前一天每人 MySetup 數。
 
 設定（local_config.json）：
   "smtp":         由 smtp_test.py 測試成功後存入（host/port/username/password/from）
   "reportWeekly": {"workerUrl": "...", "macSecret": "..."}
+  "mysetupMail":  {"username": "...", "password": "...", "host": "studioa.com.tw", "port": 143}（只設在 MBP-Hub）
 
 手動測試（不經 Worker，直接產一份寄出）：
   python3 report_worker.py --local 004 2026-10-10 收件人@studioa.com.tw [編制人數]
@@ -41,6 +44,11 @@ QUICK_INTERVAL_SEC = 12
 UPDATE_INTERVAL_SEC = 600
 UPDATE_STAMP = HERE / ".last_update_check"
 UPDATE_BLOCKED_STAMP = HERE / ".update_blocked_notified"
+MYSETUP_MAIL_INTERVAL_SEC = 3600       # 每小時抓一次 MySetup 每日信
+MYSETUP_MAIL_STAMP = HERE / ".last_mysetup_mail"
+MYSETUP_STATE = HERE / ".mysetup_mail_state.json"   # 待回填閉店網站的日子、今天通知過什麼
+MYSETUP_ALERT_HOUR = 12                # 到中午還沒收到前一天的信就通知 Sam
+MYSETUP_BACKFILL_DAYS = 14             # 閉店網站只回填近兩週
 
 
 def log(msg):
@@ -188,6 +196,7 @@ def build_files(shop_id, week_end, yoy_end, employee_count, traffic=None, mysetu
     ms = mysetup_job or {}
     if ms.get("data"):
         payload["mysetupFile"] = ms["data"]
+        payload["mysetupFileName"] = ms.get("filename") or ""
         log(f"  使用門市上傳的 Personal Setup Excel：{ms.get('filename', '')}（對照規則 {len(ms.get('rules') or [])} 條）")
     # MyCoach：店長在 LINE 輸入驗證碼後，本機存著該門市的登入 cookie（撐不過一天，過期就留空）
     mc_session = mycoach_client.load_shop_session(shop_id)
@@ -229,12 +238,16 @@ def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, t
     wk_start = wk_end - timedelta(days=6)
     ms = mysetup_job or {}
     files, meta = build_files(shop_id, week_end, yoy_end, employee_count, traffic, mysetup_job)
-    ms_result = meta["sourceMeta"].get("mysetup") if ms.get("data") else None
+    ms_result = meta["sourceMeta"].get("mysetup")   # 有上傳檔或每日存檔才會有
     notice = ""
     if ms_result and ms_result["unmatched"]:
         names = "、".join(f"{u['name']}（{u['count']} 筆）" for u in ms_result["unmatched"])
         notice = (f"\nMySetup 有名字對不上員工：{names}。這些筆數暫時列在第 13/14 頁加總列上方，"
                   "請到 LINE「我的帳戶」的 MySetup 名稱對照指定員工，下次產出會自動套用。\n")
+    if ms_result and ms_result.get("missing"):
+        days = "、".join(f"{date.fromisoformat(d):%m/%d}" for d in ms_result["missing"])
+        notice += (f"\nMySetup 每日資料缺 {days}，這幾天的提交數沒有算進第 13/14 頁。"
+                   "需要的話可以在 LINE「產出週報」上傳涵蓋這幾天的 Personal Setup 匯出檔，再重新產出。\n")
     if mycoach_set and not meta["sourceMeta"].get("mycoach"):
         notice += ("\nMyCoach 這次沒有登入（或登入已過期），第 13/14 頁充值數留空。"
                    "下次產出前請在 LINE「產出週報」頁先輸入驗證碼登入。\n")
@@ -331,6 +344,7 @@ def process_jobs(cfg):
         if not job:
             return
         log(f"領到工作 #{job['id']}：{job['shop_id']} {job['shop_name']} 週結束 {job['week_end']}")
+        process_mysetup_mail(cfg, min_interval=600)   # 產報前先看有沒有剛到的 MySetup 每日信
         try:
             ms_result = build_and_send(cfg, job["shop_id"], job["shop_name"], job["week_end"], job.get("yoy_end"),
                                        job.get("employee_count"), job["to_email"], job.get("manager_name", ""),
@@ -347,6 +361,120 @@ def process_jobs(cfg):
             notify_sam(cfg, f"產報失敗 {job['shop_name']} {job['week_end']}",
                        f"工作 #{job['id']}，收件人 {job['to_email']}，版本 {app_version()}。"
                        f"已自動退回次數並通知店長。\n\n{tb}")
+
+
+# ─── MySetup 每日信件 ─────────────────────────────────────
+def _mysetup_state():
+    try:
+        return json.loads(MYSETUP_STATE.read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+def process_mysetup_mail(cfg, min_interval=MYSETUP_MAIL_INTERVAL_SEC):
+    """抓 Sam 信箱的 Personal Setup 每日信（全公司、前一天）→ 本機存檔 → 回報 Worker 狀態 → 回填閉店網站。
+    沒設定 mysetupMail 的 Mac 什麼都不做。"""
+    mc = cfg.get("mysetupMail") or {}
+    if not (mc.get("username") and mc.get("password")):
+        return
+    try:
+        if time.time() - MYSETUP_MAIL_STAMP.stat().st_mtime < min_interval:
+            return
+    except OSError:
+        pass
+    MYSETUP_MAIL_STAMP.write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
+    import mysetup_mail
+    state = _mysetup_state()
+    pending = set(state.get("backfill") or [])
+    try:
+        r = mysetup_mail.fetch_mail(mc, log=log)
+        if r["files"]:
+            log(f"MySetup 每日信：匯入 {r['files']} 個檔，新增 {r['new']} 筆")
+        oldest = (date.today() - timedelta(days=MYSETUP_BACKFILL_DAYS)).isoformat()
+        pending |= {d for d in r["dates"] if d >= oldest}
+    except Exception as e:
+        log(f"MySetup 抓信失敗：{e}")
+    st = mysetup_mail.status()
+    try:
+        worker(cfg, "POST", "/api/mac/mysetup/status",
+               {**st, "shops": sorted(set(mysetup_mail.APPLE_ID_TO_SHOP.values())),
+                "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S+08:00")})
+    except urllib.error.HTTPError as e:
+        if e.code != 404:   # Worker 還沒部署這個 API：略過
+            log(f"回報 MySetup 存檔狀態失敗：HTTP {e.code}")
+    except Exception as e:
+        log(f"回報 MySetup 存檔狀態失敗：{e}")
+    if pending:
+        pending -= backfill_closing_mysetup(cfg, sorted(pending))
+    state["backfill"] = sorted(pending)
+    _mysetup_alerts(cfg, st, state)
+    MYSETUP_STATE.write_text(json.dumps(state, ensure_ascii=False), "utf-8")
+
+
+def _mysetup_alerts(cfg, st, state):
+    """中午還沒收到前一天的信、或出現對照表沒有的 Apple ID：寄信通知 Sam（同一件事一天一次）。"""
+    today = date.today()
+    notified = state.get("notified") or {}
+    notified = {k: v for k, v in notified.items() if v == today.isoformat()}
+    yesterday = (today - timedelta(days=1)).isoformat()
+    if (time.localtime().tm_hour >= MYSETUP_ALERT_HOUR and st.get("through") and st["through"] < yesterday
+            and f"late:{yesterday}" not in notified):
+        notified[f"late:{yesterday}"] = today.isoformat()
+        notify_sam(cfg, "MySetup 每日信還沒到",
+                   f"到 {MYSETUP_ALERT_HOUR}:00 還沒收到 {yesterday} 的 Personal Setup 信，存檔目前只到 {st['through']}。\n"
+                   f"缺的日子：{'、'.join(st.get('missing') or []) or '無'}。\n"
+                   "信到了下一輪（每小時）會自動匯入；若信件格式或寄件方式改了，請檢查 mysetupMail 設定。")
+    seen = set(state.get("unknown_notified") or [])
+    new_unknown = [u for u in st.get("unknown") or [] if u["apple_id"] not in seen]
+    if new_unknown:
+        notify_sam(cfg, "MySetup 有門市對不上",
+                   "每日 Personal Setup 檔出現對照表沒有的 Apple ID，這些門市的資料先存著、不會算進任何週報：\n"
+                   + "\n".join(f"  {u['apple_id']}　{u['pos']}（{u['rows']} 筆）" for u in new_unknown)
+                   + "\n\n請把門市代碼補進 mysetup_mail.py 的 APPLE_ID_TO_SHOP。")
+        state["unknown_notified"] = sorted(seen | {u["apple_id"] for u in new_unknown})
+    state["notified"] = notified
+
+
+def backfill_closing_mysetup(cfg, days):
+    """把存檔裡這幾天每位員工的 MySetup 數寫進閉店網站（mysetup_daily，以 Apple 資料為準）。
+    回傳處理完的日子；EPB 連不上（查不到員工姓名）或 Worker 失敗時留到下一輪。"""
+    import mysetup
+    import mysetup_mail
+    import server
+    try:
+        stores = worker(cfg, "GET", "/api/mac/closing/mysetup-targets")["stores"]
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            log(f"取閉店網站門市失敗：HTTP {e.code}")
+        return set()
+    except Exception as e:
+        log(f"取閉店網站門市失敗：{e}")
+        return set()
+    if not epb_reachable():
+        log("EPB 連不上，MySetup 閉店網站回填留到下一輪")
+        return set()
+    done = set(days)
+    for st in stores:
+        shop = st["store_id"]
+        if not mysetup_mail.apple_ids_of(shop):
+            continue
+        try:
+            emp_names = server.epb_emp_names([p["code"] for p in st.get("staff") or []])
+            aliases = {mysetup.normalize(r.get("name")): str(r.get("code") or "").strip()
+                       for r in st.get("rules") or [] if mysetup.normalize(r.get("name")) and r.get("code")}
+            for d in days:
+                day = date.fromisoformat(d)
+                recs = mysetup_mail.records_for(shop, day, day)
+                mapping = mysetup.match_names([x["name"] for x in recs], emp_names, aliases)
+                counts, unmatched, _ = mysetup.summarize(recs, mapping, day, day)
+                worker(cfg, "POST", "/api/mac/closing/mysetup-auto",
+                       {"store_id": shop, "date": d, "counts": counts,
+                        "unmatched": [{"name": n, "count": c} for n, c in unmatched.items()]})
+            log(f"門市 {shop} MySetup 閉店網站已回填：{'、'.join(days)}")
+        except Exception as e:
+            log(f"門市 {shop} MySetup 閉店網站回填失敗：{e}")
+            done = set()
+    return done
 
 
 def process_analysis_jobs(cfg):
@@ -383,6 +511,7 @@ def main():
         process_traffic_verify(cfg)
         process_mycoach(cfg)
         process_jobs(cfg)
+        process_mysetup_mail(cfg)
         if epb_reachable():
             process_analysis_jobs(cfg)
         # launchd 每 60 秒才啟動一次；這輪剩下的時間每 12 秒再看一次驗證碼信與待測人流帳號，

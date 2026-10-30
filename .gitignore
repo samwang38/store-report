@@ -12,3 +12,6 @@ local_config.backup-*.json
 .last_update_check
 .update_blocked_notified
 .mycoach_sessions.json
+mysetup_archive.sqlite
+.last_mysetup_mail
+.mysetup_mail_state.json

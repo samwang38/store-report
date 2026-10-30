@@ -32,6 +32,8 @@ COL_UID = "Unique ID"
 COL_NAME = "Staff Name"
 COL_DEVICE = "Device"
 COL_SUBMIT = "Personal Setup Submission Time"
+COL_APPLE_ID = "Apple ID"     # 門市在 Apple 的代號（例：士林 337277），每日全公司檔用來分店
+COL_POS = "POS Name"
 
 
 # ─── 名字正規化 ──────────────────────────────────────────────────────────
@@ -65,8 +67,17 @@ def _to_datetime(value):
     return None
 
 
+def _cell_text(row, i):
+    if i is None or i >= len(row) or row[i] is None:
+        return None
+    v = row[i]
+    if isinstance(v, float) and v.is_integer():   # 數字欄位讀成 337277.0
+        v = int(v)
+    return str(v).strip() or None
+
+
 def parse_personal_setup(data):
-    """讀所有分頁（iPhone/iPad/Mac/Apple Watch），回傳 [{uid, name, device, submitted}]，以 Unique ID 去重。"""
+    """讀所有分頁（iPhone/iPad/Mac/Apple Watch），回傳 [{uid, name, device, submitted, apple_id, pos}]，以 Unique ID 去重。"""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # Apple 匯出檔沒有預設樣式，openpyxl 會警告
         wb = openpyxl.load_workbook(BytesIO(data), read_only=True, data_only=True)
@@ -84,6 +95,8 @@ def parse_personal_setup(data):
         i_name, i_submit = header.index(COL_NAME), header.index(COL_SUBMIT)
         i_uid = header.index(COL_UID) if COL_UID in header else None
         i_dev = header.index(COL_DEVICE) if COL_DEVICE in header else None
+        i_aid = header.index(COL_APPLE_ID) if COL_APPLE_ID in header else None
+        i_pos = header.index(COL_POS) if COL_POS in header else None
         for row in rows:
             name = str(row[i_name] or "").strip() if i_name < len(row) else ""
             submitted = _to_datetime(row[i_submit]) if i_submit < len(row) else None
@@ -99,6 +112,8 @@ def parse_personal_setup(data):
                 "name": name,
                 "device": (row[i_dev] if i_dev is not None else None) or ws.title,
                 "submitted": submitted,
+                "apple_id": _cell_text(row, i_aid),
+                "pos": _cell_text(row, i_pos),
             })
     wb.close()
     if not found_sheet:
