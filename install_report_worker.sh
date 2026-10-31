@@ -17,6 +17,8 @@ PY="$APP/venv/bin/python"
 
 if [ "${1:-}" = "uninstall" ]; then
   launchctl unload "$PLIST" 2>/dev/null; rm -f "$PLIST"
+  MC="$HOME/Library/LaunchAgents/com.studioa.report-weekly-mycoach.plist"   # report_worker 自動裝的 MyCoach 常駐程式
+  launchctl unload "$MC" 2>/dev/null; rm -f "$MC"
   echo "已停用並移除 $LABEL"; exit 0
 fi
 

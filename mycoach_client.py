@@ -75,6 +75,16 @@ def session_valid(session):
         return False
 
 
+def session_alive(session):
+    """同 session_valid，但連不上 MyCoach 時丟例外（不當成已登出）；常駐程式每 10 分鐘確認登入用，順便讓連線不閒置。"""
+    return _check_page(session) is not None
+
+
+def logged_in_shops():
+    """本機存著登入 cookie 的門市。"""
+    return [shop for shop, item in _load_sessions().items() if item.get("loggedIn")]
+
+
 def _store_ids(session, page):
     """經銷商 ID 在頁面隱藏欄位；門市清單由 findAllbyRole 取得。storeId 留空會查到全經銷商所有門市，所以一定要帶。"""
     m = re.search(r'id="dealerId"[^>]*value="([^"]*)"', page)

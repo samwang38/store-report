@@ -23,6 +23,7 @@
 import base64
 import json
 import os
+import plistlib
 import socket
 import subprocess
 import sys
@@ -42,6 +43,9 @@ HERE = Path(__file__).resolve().parent
 MAX_JOBS_PER_RUN = 3
 QUICK_ROUNDS = 3            # 每輪結束後再快速檢查幾次（3 × 12 秒，留空檔給下一輪啟動）
 QUICK_INTERVAL_SEC = 12
+MYCOACH_AGENT_LABEL = "com.studioa.report-weekly-mycoach"   # MyCoach 常駐程式（report_worker.py --mycoach）
+MYCOACH_WAIT_SEC = 25       # 對 Worker 長輪詢的秒數：店長按下去 1–2 秒內就領走
+MYCOACH_ALIVE_SEC = 600     # 每 10 分鐘確認各店 MyCoach 登入還有效（順便讓連線不閒置）
 UPDATE_INTERVAL_SEC = 600
 UPDATE_STAMP = HERE / ".last_update_check"
 UPDATE_BLOCKED_STAMP = HERE / ".update_blocked_notified"
@@ -64,14 +68,14 @@ def load_cfg():
 
 
 # ─── Worker API ───────────────────────────────────────────
-def worker(cfg, method, path, body=None):
+def worker(cfg, method, path, body=None, timeout=30):
     rw = cfg["reportWeekly"]
     req = urllib.request.Request(
         rw["workerUrl"].rstrip("/") + path, method=method,
         data=json.dumps(body).encode() if body is not None else None,
         headers={"authorization": f"Bearer {rw['macSecret']}", "content-type": "application/json",
                  "user-agent": "report-weekly-mac/1.0", "x-app-version": app_version()})
-    with urllib.request.urlopen(req, timeout=30) as res:
+    with urllib.request.urlopen(req, timeout=timeout) as res:
         return json.loads(res.read().decode())
 
 
@@ -299,16 +303,18 @@ def process_traffic_verify(cfg):
         log(f"門市 {item['shop_id']} 人流帳號驗證失敗：{e}")
 
 
-def process_mycoach(cfg):
-    """店長在 LINE 要 MyCoach 驗證碼／送出驗證碼：每輪處理一件。驗證碼綁在這台 Mac 的連線上，cookie 以門市存檔。"""
+def process_mycoach(cfg, wait=0):
+    """店長在 LINE 要 MyCoach 驗證碼／送出驗證碼：每輪處理一件，有處理回 True。驗證碼綁在這台 Mac 的連線上，cookie 以門市存檔。
+    wait：在 Worker 等待待辦的秒數（常駐程式用；主程式每輪不等，當備援）。"""
     try:
-        item = worker(cfg, "GET", "/api/mac/mycoach/next")["item"]
+        item = worker(cfg, "GET", "/api/mac/mycoach/next" + (f"?wait={wait}" if wait else ""),
+                      timeout=wait + 30)["item"]
     except urllib.error.HTTPError as e:
         if e.code == 404:   # Worker 還沒部署 MyCoach 功能：略過，不影響產報
-            return
+            return False
         raise
     if not item:
-        return
+        return False
     import mycoach_client
     shop = item["shop_id"]
     result = {"shop_id": shop}
@@ -334,6 +340,86 @@ def process_mycoach(cfg):
         result.update(state="failed", error="MyCoach 暫時無法連線")
         log(f"門市 {shop} MyCoach 處理失敗：{e}")
     worker(cfg, "POST", "/api/mac/mycoach/result", result)
+    return True
+
+
+def mycoach_keepalive(cfg):
+    """各店 MyCoach 登入還有沒有效：有效就存回 cookie，失效就標成未登入；結果回報 Worker（記錄登入實際撐多久）。
+    連不上 MyCoach 時不算失效，下次再確認。"""
+    import mycoach_client
+    for shop in mycoach_client.logged_in_shops():
+        s = mycoach_client.load_shop_session(shop)
+        try:
+            alive = mycoach_client.session_alive(s)
+        except Exception as e:
+            log(f"門市 {shop} MyCoach 確認登入時連不上（下次再試）：{e}")
+            continue
+        mycoach_client.save_shop_session(shop, s, logged_in=alive)
+        if not alive:
+            log(f"門市 {shop} MyCoach 登入已失效")
+        try:
+            worker(cfg, "POST", "/api/mac/mycoach/alive", {"shop_id": shop, "alive": alive})
+        except urllib.error.HTTPError as e:
+            if e.code != 404:   # Worker 還沒部署：略過
+                log(f"回報 MyCoach 登入狀態失敗：HTTP {e.code}")
+        except Exception as e:
+            log(f"回報 MyCoach 登入狀態失敗：{e}")
+
+
+def _code_stamp():
+    """程式檔的修改時間：自動更新換了檔案，常駐程式就結束、讓 launchd 以新版重啟。"""
+    return tuple(_mtime(HERE / f) for f in ("VERSION", "report_worker.py", "mycoach_client.py"))
+
+
+def _mtime(p):
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0
+
+
+def mycoach_loop(cfg):
+    """--mycoach 常駐程式（launchd KeepAlive）：一直對 Worker 長輪詢 MyCoach 待辦，不用等主程式每分鐘一輪、
+    也不會被產週報、抓信卡住；每 10 分鐘確認一次各店登入。"""
+    log("MyCoach 常駐程式啟動")
+    started, last_alive = _code_stamp(), 0.0
+    while _code_stamp() == started:
+        if time.time() - last_alive >= MYCOACH_ALIVE_SEC:
+            last_alive = time.time()
+            mycoach_keepalive(cfg)
+        t0 = time.time()
+        try:
+            handled = process_mycoach(cfg, wait=MYCOACH_WAIT_SEC)
+        except Exception as e:
+            log(f"MyCoach 常駐程式連 Worker 失敗：{e}")
+            handled = False
+        if not handled and time.time() - t0 < 5:   # Worker 沒有等就回（舊版或連線錯誤）：別一直打
+            time.sleep(5)
+    log("程式已更新，MyCoach 常駐程式結束（launchd 會以新版重啟）")
+
+
+def ensure_mycoach_agent(cfg, agents_dir=None, load=True):
+    """自動更新只會換檔案、不會裝新的 launchd；這裡補裝 MyCoach 常駐程式（已裝就不動）。
+    local_config.json 設 "mycoachAgent": false 可停用。回傳是否新裝。"""
+    if cfg.get("mycoachAgent") is False:
+        return False
+    agents = Path(agents_dir) if agents_dir else Path.home() / "Library" / "LaunchAgents"
+    plist = agents / f"{MYCOACH_AGENT_LABEL}.plist"
+    if plist.exists():
+        return False
+    agents.mkdir(parents=True, exist_ok=True)
+    with open(plist, "wb") as f:
+        plistlib.dump({
+            "Label": MYCOACH_AGENT_LABEL,
+            "ProgramArguments": [sys.executable, "report_worker.py", "--mycoach"],
+            "WorkingDirectory": str(HERE),
+            "KeepAlive": True, "ThrottleInterval": 10, "RunAtLoad": True,
+            "StandardOutPath": "/tmp/report-weekly-worker.log", "StandardErrorPath": "/tmp/report-weekly-worker.log",
+        }, f)
+    if load:
+        r = subprocess.run(["launchctl", "load", str(plist)], capture_output=True, text=True)
+        log("已安裝 MyCoach 常駐程式" + ("" if r.returncode == 0 else f"，但載入失敗：{(r.stderr or r.stdout).strip()[:200]}"))
+    return True
 
 
 def process_jobs(cfg):
@@ -569,7 +655,14 @@ def main():
         emp = int(sys.argv[5]) if len(sys.argv) > 5 else None
         build_and_send(cfg, shop_id, shop_id, week_end, None, emp, to)
         return
+    if sys.argv[1:] == ["--mycoach"]:
+        mycoach_loop(cfg)
+        return
     maybe_update(cfg)
+    try:
+        ensure_mycoach_agent(cfg)
+    except Exception as e:
+        log(f"安裝 MyCoach 常駐程式失敗：{e}")
     try:
         process_outbox(cfg)
         process_traffic_verify(cfg)
