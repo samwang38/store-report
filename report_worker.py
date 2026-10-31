@@ -391,8 +391,10 @@ def process_mysetup_mail(cfg, min_interval=MYSETUP_MAIL_INTERVAL_SEC):
     if _schedule_cfg(cfg) and not state.get("schedule_initial_push"):   # 剛設定排班系統：先補推近 45 天
         pending |= {d.isoformat() for d in mysetup_mail.covered_days(oldest, date.today())}
         state["schedule_initial_push"] = date.today().isoformat()
+    new_files = 0
     try:
         r = mysetup_mail.fetch_mail(mc, log=log)
+        new_files = r["files"]
         if r["files"]:
             log(f"MySetup 每日信：匯入 {r['files']} 個檔，新增 {r['new']} 筆")
         pending |= {d for d in r["dates"] if d >= oldest.isoformat()}
@@ -408,6 +410,8 @@ def process_mysetup_mail(cfg, min_interval=MYSETUP_MAIL_INTERVAL_SEC):
             log(f"回報 MySetup 存檔狀態失敗：HTTP {e.code}")
     except Exception as e:
         log(f"回報 MySetup 存檔狀態失敗：{e}")
+    if (new_files or state.get("names_pushed") != date.today().isoformat()) and push_mysetup_names(cfg):
+        state["names_pushed"] = date.today().isoformat()
     if not _schedule_cfg(cfg):
         pending = set()
     elif pending and push_mysetup_schedule(cfg, sorted(set(mysetup_mail.APPLE_ID_TO_SHOP.values())),
@@ -474,6 +478,34 @@ def _schedule_post(ss, path, body):
                  "user-agent": "report-weekly-mac/1.0"})
     with urllib.request.urlopen(req, timeout=60) as res:
         return json.loads(res.read().decode())
+
+
+def push_mysetup_names(cfg):
+    """每日信近 45 天對不上員工的名字＋各店員工清單 → Worker，店長在「我的帳戶」不用等產出週報就能設定對照。
+    收到新信或今天還沒推過才做；EPB 連不上（查不到員工）回 False，下一輪再試。"""
+    if not epb_reachable():
+        return False
+    import mysetup_daily
+    import mysetup_mail
+    shops = sorted(set(mysetup_mail.APPLE_ID_TO_SHOP.values()))
+    end = date.today() - timedelta(days=1)
+    try:
+        rules = worker(cfg, "GET", "/api/mac/mysetup/rules")["rules"]
+        cands = mysetup_daily.store_candidates(shops)
+        data = mysetup_daily.daily_counts(shops, end - timedelta(days=MYSETUP_PUSH_DAYS - 1), end, rules, candidates=cands)
+        stores = mysetup_daily.account_names(data, cands)
+        worker(cfg, "POST", "/api/mac/mysetup/names", {"stores": stores})
+    except urllib.error.HTTPError as e:
+        if e.code == 404:   # Worker 還沒部署這個 API：當作做過，明天再試
+            return True
+        log(f"回報 MySetup 對不上的名字失敗：HTTP {e.code}")
+        return False
+    except Exception as e:
+        log(f"回報 MySetup 對不上的名字失敗：{e}")
+        return False
+    n = sum(len(v["unmatched"]) for v in stores.values())
+    log(f"MySetup 名稱對照：{len(stores)} 家店近 {MYSETUP_PUSH_DAYS} 天有 {n} 個名字對不上，已回報「我的帳戶」")
+    return True
 
 
 def push_mysetup_schedule(cfg, shops, start, end):

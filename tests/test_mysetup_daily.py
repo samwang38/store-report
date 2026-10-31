@@ -58,6 +58,13 @@ class DailyCountsTest(unittest.TestCase):
         self.assertEqual(md.period_totals(c, D1, D2)["SA1614"], {"Mac": 0, "iPad": 0, "iPhone": 2, "Watch": 1})
         self.assertEqual(md.period_totals(c, D2, D2), {"SA1614": {"Mac": 0, "iPad": 0, "iPhone": 0, "Watch": 1}})
 
+    def test_account_names(self):
+        data = md.daily_counts(["004"], D1, D2, RULES, candidates=CANDIDATES)
+        a = md.account_names(data, CANDIDATES)["004"]
+        self.assertEqual(a["unmatched"], [{"name": "路人 甲", "count": 1}])   # SKIP 與規則指定的不列
+        self.assertEqual(a["employees"], [{"code": "SA1614", "name": "吳學諭", "nameLang": "Shiyu"},
+                                          {"code": "SA3011", "name": "鄭娜娜", "nameLang": "NaNa"}])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -75,6 +75,21 @@ def daily_counts(shop_ids, start, end, rules_by_shop, candidates=None):
     return {"counts": counts, "unmatched": unmatched}
 
 
+def account_names(data, candidates):
+    """daily_counts 結果 → Worker「我的帳戶」MySetup 對照要用的 {門市: {"unmatched": [{name, count}], "employees": [{code, name, nameLang}]}}：
+    對不上的名字（整段期間各裝置加總，多的在前）與員工下拉選項（近 90 天在該店有交易的員工）。"""
+    out = {}
+    for shop in data["counts"]:
+        miss = {}
+        for people in data["unmatched"].get(shop, {}).values():
+            for name, devs in people.items():
+                miss[name] = miss.get(name, 0) + sum(devs.values())
+        emps = candidates.get(shop, {})
+        out[shop] = {"unmatched": [{"name": n, "count": c} for n, c in sorted(miss.items(), key=lambda x: (-x[1], x[0]))],
+                     "employees": [{"code": c, "name": emps[c][0], "nameLang": emps[c][1]} for c in sorted(emps)]}
+    return out
+
+
 def period_totals(per_day, start, end):
     """把 daily_counts 某店的 {日期: {鍵: {裝置: n}}} 加總成 start~end 的 {鍵: {裝置: n}}。"""
     out = {}
