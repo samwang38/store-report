@@ -1687,6 +1687,10 @@ def build_report_workbook(payload, log=lambda m: None):
         log(f"編制人數：{emp_count} 人（人均產值 = 營業額 / 編制人數）")
     traffic2, traffic10 = load_traffic(shop_id, dates, log=log)
     traffic_daily = load_traffic_daily(shop_id, dates, log=log)
+    # 有設帳密、有 siteId 卻沒拿到 → 查詢失敗（多半是 ShopperTrak 太慢），寄信時提醒重產
+    if (traffic_mod is not None and traffic_mod.has_credentials() and traffic_mod.site_id_for_shop(shop_id)
+            and not (traffic2 and traffic_daily)):
+        source_meta["trafficFailed"] = True
 
     log("解析員工清單、重建個人 sheet…")
     employees = resolve_report_employees(df_cur, dates, template_employees)

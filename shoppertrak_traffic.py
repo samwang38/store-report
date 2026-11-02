@@ -333,8 +333,11 @@ def _fetch_traffic_rows(site_id, start_date, end_date, token, tenant):
         "add_aggregated_data": True,
         "kpi": ["traffic"],
     }
-    res = requests.post(url, headers=_auth_headers(token, tenant), json=body, timeout=60)
-    return res
+    # KPI 服務偶爾極慢（官網自己也要 80 秒以上）→ 放寬到 180 秒，逾時再重試一次
+    try:
+        return requests.post(url, headers=_auth_headers(token, tenant), json=body, timeout=180)
+    except requests.exceptions.Timeout:
+        return requests.post(url, headers=_auth_headers(token, tenant), json=body, timeout=180)
 
 
 def _traffic_rows(shop_id, start_date, end_date, log=lambda m: None):

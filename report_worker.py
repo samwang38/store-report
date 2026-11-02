@@ -256,6 +256,9 @@ def build_and_send(cfg, shop_id, shop_name, week_end, yoy_end, employee_count, t
     if mycoach_set and not meta["sourceMeta"].get("mycoach"):
         notice += ("\nMyCoach 這次沒有登入（或登入已過期），第 13/14 頁充值數留空。"
                    "下次產出前請在 LINE「產出週報」頁先輸入驗證碼登入。\n")
+    if meta["sourceMeta"].get("trafficFailed"):
+        notice += ("\n這次 ShopperTrak 人流系統回應過慢，沒有抓到來客數，第 5 頁門市人流與第 6/16 頁來客數、提袋率留空。"
+                   "請稍後在 LINE「產出週報」重新產出這一週，7 天內重產不扣次。\n")
     span = f"{wk_start:%m/%d}–{wk_end:%m/%d}"
     url = upload_analysis(cfg, shop_id, week_end, files)
     if url:   # 分析改在網頁上看：信件只附週報 Excel
