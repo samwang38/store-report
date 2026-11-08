@@ -65,9 +65,11 @@ def load_fiscal_year_start(wb) -> 'date | None':
         return None
 
 # ─── C6 device codes (Mac only — C6 still needed to split mini/iMac/MacBook) ───
-C6_CPU     = {6001.0, 6002.0, 6007.0, 6008.0, 6340.0, 6341.0, 6342.0, 6343.0, 6344.0}
+C6_CPU     = {6001.0, 6002.0, 6007.0, 6008.0, 6340.0, 6341.0, 6342.0, 6343.0, 6344.0,
+              6353.0, 6354.0, 6355.0}
 #  6001 = iMac, 6002 = Mac mini
 #  6340 = MBA 13 M5, 6341 = MBA 15 M5, 6342 = MBP 14 M4/M5, 6343 = MBP 16 M5, 6344 = MacBook Neo
+#  6353 = MBP 14 M6, 6354 = MBP 14 PRO OLED XDR, 6355 = MBP 16 PRO OLED XDR（2026-11 上市，品名「MBP PXD 14/16」）
 #  ↑ 新 Mac 世代上市時只需更新此處，其餘計算自動跟進
 C6_MACBOOK = C6_CPU - {6001.0, 6002.0}   # MacBook 系列（排除 mini / iMac）
 C6_AIRPODS = {6258.0, 6312.0, 6330.0, 6348.0}   # 6348 = AirPods 5（2026-09 上市）
@@ -124,8 +126,8 @@ SKU_EXCLUDED_FROM_APPLE = {
 PRODUCT_ROWS = {
     1:  (3001.0, {6001.0}, None, None),
     2:  (3001.0, {6002.0}, None, None),
-    3:  (3001.0, None, 'MBP 14', None),   # 名稱辨別，自動涵蓋各世代 MacBook Pro 14
-    4:  (3001.0, None, 'MBP 16', None),   # MacBook Pro 16
+    3:  (3001.0, None, 'MBP (PXD )?14', None),   # 名稱辨別（正規式），自動涵蓋各世代 MacBook Pro 14，含 PRO OLED XDR
+    4:  (3001.0, None, 'MBP (PXD )?16', None),   # MacBook Pro 16
     5:  (3001.0, None, 'MBA 13', None),   # MacBook Air 13
     6:  (3001.0, None, 'MBA 15', None),   # MacBook Air 15
     7:  (3001.0, None, 'MBN',    None),   # MacBook Neo
@@ -155,7 +157,7 @@ PRODUCT_ROWS = {
     34: (3001.0, {6319.0, 6338.0}, None, None),
     35: (3001.0, {6331.0, 6332.0}, None, None),
     36: (3001.0, {6333.0}, None, None),
-    37: (3001.0, {6313.0}, None, None),
+    37: (3001.0, {6313.0, 6351.0, 6352.0}, None, None),   # iPad mini A17 Pro、A20 Pro（2026-11 上市）
     39: (3002.0, {6100.0}, '第一代', None),
     40: (3002.0, {6100.0}, '2nd', None),
     41: (3002.0, {6100.0}, 'USB-C', None),
@@ -2193,6 +2195,8 @@ LAUNCH_PAIRS = [
     ('Watch S12',         {6349.0}, 3001.0, 'Watch S11',         {6327.0}),
     ('Watch Ultra 4',     {6350.0}, 3001.0, 'Watch Ultra 3',     {6328.0}),
     ('AirPods 5',         {6348.0}, 3002.0, 'AirPods 4',         {6312.0}),
+    ('iPad mini A20 Pro', {6351.0, 6352.0}, 3001.0, 'iPad mini A17 Pro', {6313.0, 6314.0}),
+    ('MacBook Pro 14 M6', {6353.0}, 3001.0, 'MacBook Pro 14 M5', {6342.0}),
 ]
 # 沒有對照機種、改追 AppleCare+ 搭售率的新機：(機種, C6, C3, ACPP 品名關鍵字)。只算 AppleCare+，不含 SAcare
 LAUNCH_ACPP = [

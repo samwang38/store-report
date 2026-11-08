@@ -336,6 +336,7 @@ def run_remote(sql, timeout=180, max_rows=100000):
             JAVA,
             "-Dsun.net.client.defaultConnectTimeout=5000",
             "-Dsun.net.client.defaultReadTimeout=120000",
+            "-Duser.timezone=Asia/Taipei",   # ERP 日期是台灣當地日期；Mac 在國外時區時不固定會整份偏一天
             f"-Depb.wsdl={EPB_WSDL_URL}",
             "-cp",
             JAVA_CP,
