@@ -51,7 +51,7 @@ EPB 原始欄位 → 標準中文欄位 DataFrame（與 800AB 匯出格式一致
 ### 商品分類體系
 - **C3（類別3）大分類**：3001=Apple 主機、3002=Apple 原廠配件、3003=3PP 第三方配件、3032=ACPP（AppleCare+ 代收保費）、3033/3046=其他原廠類
 - **C4（類別4）產品線**（跨年代穩定，新機上市不變）：iPhone=4004；iPad=4005/4006/4041；Watch=4038；MacBook=4002、mini+iMac=4001
-- **C6（類別6）細分型號**（每代更新）：Mac 台數必須用 C6 區分 MacBook/mini/iMac — `C6_CPU` 常數（6001=iMac、6002=mini、634x=各代 MacBook），**新 Mac 世代上市只需更新引擎的 `C6_CPU`**
+- **C6（類別6）細分型號**（每代更新）：Mac 台數必須用 C6 區分 MacBook/mini/iMac — `C6_CPU` 常數（6001=iMac、6002=mini、6277=Mac Studio、634x/635x=各代 MacBook；桌機集合 `C6_MAC_DESKTOP`），**新 Mac 世代上市只需更新引擎的 `C6_CPU`**
 - **SAcare 各機種 C6**：cpu=6533、ipad=6534、iphone=6535、watch=6536、airpods=6537
 - **認證機（整新機）品牌** {881,885,886,888}：計台數時 bypass C3 條件
 - **VAP 品牌** {59, 224, 277, 106}
