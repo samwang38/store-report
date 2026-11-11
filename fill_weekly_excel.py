@@ -510,9 +510,12 @@ def fill_sheet1(ws, df_cur: pd.DataFrame, quarter_start: date, week_end: date):
     _cert = {881.0, 885.0, 886.0, 888.0}
     _brand = d.get('品牌代碼', pd.Series(dtype=float, index=d.index)).fillna(0)
 
-    def calc_units(start, end, c3, c6_set, must_inc, must_exc):
+    legacy_row = _legacy_ipad_row(d)   # 舊款／認證機 iPad 依品名尺寸歸列
+
+    def calc_units(start, end, c3, c6_set, must_inc, must_exc, row_idx=None):
         s, e = pd.Timestamp(start), pd.Timestamp(f'{end} 23:59:59')
-        sub = d[(d['單據日期'] >= s) & (d['單據日期'] <= e)]
+        period_mask = (d['單據日期'] >= s) & (d['單據日期'] <= e)
+        sub = d[period_mask]
         # 認證機（品牌 881/885/886/888）無論 C3 為何，只要符合條件就計入
         brand_sub = _brand.reindex(sub.index).fillna(0)
         c3_mask = (sub['類別3代碼'] == c3) | brand_sub.isin(_cert)
@@ -523,6 +526,7 @@ def fill_sheet1(ws, df_cur: pd.DataFrame, quarter_start: date, week_end: date):
             sub = sub[c3_mask & sub['類別6代碼'].isin(c6_set)]
         if must_inc: sub = sub[sub['名稱'].str.contains(must_inc, case=False, na=False)]
         if must_exc: sub = sub[~sub['名稱'].str.contains(must_exc, case=False, na=False)]
+        sub = pd.concat([sub, d[period_mask & (legacy_row == row_idx)]])
         # 台數邏輯：尾款當天計入（銷售完成），訂金不計，銷退扣除
         sale = sub.loc[sub['交易類型'].isin(SALE_TYPES), '數量'].sum()
         ret  = sub.loc[sub['交易類型'] == '銷退', '數量'].abs().sum()
@@ -536,13 +540,13 @@ def fill_sheet1(ws, df_cur: pd.DataFrame, quarter_start: date, week_end: date):
 
     table = {}
     for row_idx, (c3, c6_set, inc, exc) in PRODUCT_ROWS.items():
-        prev = calc_units(prev_start, prev_end, c3, c6_set, inc, exc)
+        prev = calc_units(prev_start, prev_end, c3, c6_set, inc, exc, row_idx)
         weekly = []
         for ws_, we_ in weeks:
             if ws_ > week_end:
                 weekly.append(0)
             else:
-                weekly.append(calc_units(ws_, min(we_, week_end), c3, c6_set, inc, exc))
+                weekly.append(calc_units(ws_, min(we_, week_end), c3, c6_set, inc, exc, row_idx))
         table[row_idx] = [prev] + weekly
 
     for st_row, members in SUBTOTAL_ROWS.items():
@@ -1795,7 +1799,29 @@ def _device_stats(d, sa_codes):
     return out
 
 
-def _model_units(d, c3, c6_set, must_inc, must_exc):
+# 第 1 頁 iPad 各列：類別 6 不在這幾列的舊款／認證機 iPad（舊款類別 6 常不分尺寸），依品名尺寸併入同尺寸列
+IPAD_SIZE_ROWS = {'iPad': 33, 'Air 11': 34, 'Air 13': 35, 'Pro 11': 36, 'Pro 13': 37, 'mini': 38}
+
+
+def _legacy_ipad_row(d):
+    """回傳每列併入的第 1 頁列號（非舊款／認證機 iPad 為 0）。"""
+    current = {c for r in IPAD_SIZE_ROWS.values() for c in PRODUCT_ROWS[r][1]}
+    brand = d.get('品牌代碼', pd.Series(0.0, index=d.index)).fillna(0)
+    m = (((d['類別3代碼'] == 3001.0) | brand.isin(CERT_BRANDS)) &
+         d['類別4代碼'].isin(C4_IPAD) & ~d['類別6代碼'].isin(current))
+    name = d['名稱'].astype(str).str.lower()
+    big = name.str.contains(r'(?<!\d)(?:13|12\.9)(?!\d)')   # 13 吋／12.9 吋
+    pro, air = name.str.contains('pro'), name.str.contains('air')
+    row = pd.Series(IPAD_SIZE_ROWS['iPad'], index=d.index)
+    row[air] = IPAD_SIZE_ROWS['Air 11']
+    row[air & big] = IPAD_SIZE_ROWS['Air 13']
+    row[pro] = IPAD_SIZE_ROWS['Pro 11']
+    row[pro & big] = IPAD_SIZE_ROWS['Pro 13']
+    row[name.str.contains('mini')] = IPAD_SIZE_ROWS['mini']   # mini 的晶片名含「Pro」，最後蓋過
+    return row.where(m, 0)
+
+
+def _model_units(d, c3, c6_set, must_inc, must_exc, row_idx=None):
     """機型台數，判定同 fill_sheet1 的 calc_units。"""
     mask = (d['類別3代碼'] == c3) | d['品牌代碼'].isin(CERT_BRANDS)
     if c6_set is not None:
@@ -1803,7 +1829,7 @@ def _model_units(d, c3, c6_set, must_inc, must_exc):
     name = d['名稱'].astype(str)
     if must_inc: mask &= name.str.contains(must_inc, case=False, na=False)
     if must_exc: mask &= ~name.str.contains(must_exc, case=False, na=False)
-    return _net_units(d, mask)
+    return _net_units(d, mask | (_legacy_ipad_row(d) == row_idx))
 
 
 def fill_sheet_detail_products(wb, df_cur, df_prev, sacare_prices, dates: dict):
@@ -1830,7 +1856,7 @@ def fill_sheet_detail_products(wb, df_cur, df_prev, sacare_prices, dates: dict):
     row = _write_section(ws, row, '主機機型明細（台數；新機型去年同期為 0）', st)
     ws1 = wb['1.主機銷售台數'] if '1.主機銷售台數' in wb.sheetnames else None
     for row_idx, (c3, c6_set, inc, exc) in PRODUCT_ROWS.items():
-        vals = [_model_units(f, c3, c6_set, inc, exc) for f in frames]
+        vals = [_model_units(f, c3, c6_set, inc, exc, row_idx) for f in frames]
         if not any(vals):
             continue
         label = ws1.cell(row=row_idx + 1, column=1).value if ws1 else f'機型 {row_idx}'

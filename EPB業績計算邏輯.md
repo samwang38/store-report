@@ -90,7 +90,7 @@ EPB 原始欄位 → 標準中文欄位 DataFrame（與 800AB 匯出格式一致
 
 附加率慣例：Sheet 6/16「保固加總 X 搭售率」＝(ACPP 套數＋SA 套數) ÷ 該機種台數；Sheet 13/14 同理。
 
-新機種上市時：AirPods 要把新 C6 加進 `C6_AIRPODS`；Mac 加進 `C6_CPU`；第 1 頁要在模板插列並更新 `PRODUCT_ROWS`/`SUBTOTAL_ROWS`（iPhone/iPad/Watch 其他頁用 C4，不必改）。2026-09：iPhone 18 Pro=6345、18 Pro Max=6346、AirPods 5=6348、Watch S12=6349、Ultra 4=6350。2026-10：iPhone Duo=6347（無對照機種，分析檔「新機上市追蹤」改追 AppleCare+ 搭售率，`LAUNCH_ACPP`，ACPP 以品名含「iphone duo」對機種、不含 SAcare）。2026-11：iPad mini A20 Pro=6351/6352（第 1 頁併入「iPad mini」列）、MacBook Pro 14 M6=6353、14/16 PRO OLED XDR=6354/6355（品名「MBP PXD 14/16」，第 1 頁併入 14/16 吋列）。
+新機種上市時：AirPods 要把新 C6 加進 `C6_AIRPODS`；Mac 加進 `C6_CPU`；第 1 頁要在模板插列並更新 `PRODUCT_ROWS`/`SUBTOTAL_ROWS`（iPhone/iPad/Watch 其他頁用 C4，不必改）。2026-09：iPhone 18 Pro=6345、18 Pro Max=6346、AirPods 5=6348、Watch S12=6349、Ultra 4=6350。2026-10：iPhone Duo=6347（無對照機種，分析檔「新機上市追蹤」改追 AppleCare+ 搭售率，`LAUNCH_ACPP`，ACPP 以品名含「iphone duo」對機種、不含 SAcare）。2026-11：iPad mini A20 Pro=6351/6352（第 1 頁併入「iPad mini」列）、MacBook Pro 14 M6=6353、14/16 PRO OLED XDR=6354/6355（品名「MBP PXD 14/16」，第 1 頁併入 14/16 吋列）。第 1 頁 iPad 各列：類別 6 不在該六列的舊款／認證機 iPad（舊款類別 6 常不分尺寸），依品名尺寸（mini／Pro／Air＋13 或 12.9 吋）併入同尺寸列（`IPAD_SIZE_ROWS`），iPad 合計＝第 6 頁 iPad 台數。
 
 ## 4. 個人層級 KPI（`calc_employee`，Sheet 12-15 使用）
 
