@@ -2226,6 +2226,8 @@ LAUNCH_PAIRS = [
     ('AirPods 5',         {6348.0}, 3002.0, 'AirPods 4',         {6312.0}),
     ('iPad mini A20 Pro', {6351.0, 6352.0}, 3001.0, 'iPad mini A17 Pro', {6313.0, 6314.0}),
     ('MacBook Pro 14 M6', {6353.0}, 3001.0, 'MacBook Pro 14 M5', {6342.0}),
+    ('MacBook Pro 14 PRO OLED XDR', {6354.0}, 3001.0, 'MacBook Pro 14 M5', {6342.0}),
+    ('MacBook Pro 16 PRO OLED XDR', {6355.0}, 3001.0, 'MacBook Pro 16 M5', {6343.0}),
 ]
 # 沒有對照機種、改追 AppleCare+ 搭售率的新機：(機種, C6, C3, ACPP 品名關鍵字)。只算 AppleCare+，不含 SAcare
 LAUNCH_ACPP = [
